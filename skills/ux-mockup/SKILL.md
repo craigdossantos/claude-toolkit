@@ -1,20 +1,66 @@
 ---
 name: ux-mockup
-description: Create interactive HTML mockups for UX design review with built-in feedback collection, version history, and clipboard export. Use when designing UI flows, page layouts, or component states that need visual review and iterative feedback. Triggers on "mockup", "UX design", "design review", "visual design", "UI mockup", "mock up the flow", "show me what it looks like", or any request to create visual designs for review before implementation.
+description: Create interactive HTML mockups for UX design review with built-in feedback collection, version history, and clipboard export. Supports two modes — (1) from-scratch mockups for new designs, and (2) live-capture mockups that start from an existing site/page and iterate on it. Use when designing UI flows, page layouts, or component states that need visual review and iterative feedback. Triggers on "mockup", "UX design", "design review", "visual design", "UI mockup", "mock up the flow", "show me what it looks like", "mockup changes to the live site", "iterate on the existing page", "redesign this page", or any request to create visual designs for review before implementation.
 ---
 
 # UX Mockup
 
 Create self-contained HTML mockup pages for iterative UX design review. The mockup includes per-section feedback textareas, version history navigation, and one-click JSON clipboard export.
 
+Supports two modes:
+
+- **From scratch** — design new pages/components with no existing reference
+- **Live capture** — start from an existing site or local dev server page, then iterate
+
 ## Workflow
 
 1. **Understand scope** — identify what states, pages, or components to mock up
-2. **Generate mockup** — create a single HTML file using the shell template
-3. **Open in browser** — `open <path>` so the user can review
-4. **Collect feedback** — user fills in feedback textareas and copies JSON to clipboard
-5. **Iterate in place** — update the same file, wrapping old content as a prior version
-6. **Repeat** until approved
+2. **Determine mode** — from-scratch or live-capture (see below)
+3. **Generate mockup** — create a single HTML file using the shell template
+4. **Open in browser** — `open <path>` so the user can review
+5. **Collect feedback** — user fills in feedback textareas and copies JSON to clipboard
+6. **Iterate in place** — update the same file, wrapping old content as a prior version
+7. **Repeat** until approved
+
+## Live Capture Mode
+
+Use this mode when starting from an existing live site or local dev server page. The goal is to faithfully reproduce the current page as v1, then iterate changes on top.
+
+### Live capture workflow
+
+1. **Get the URL** — ask the user for the page URL (production, staging, or `localhost`)
+2. **Fetch the page** — use `WebFetch` to retrieve the full HTML of the page
+3. **Extract the relevant sections** — identify the portions of the page the user wants to iterate on (e.g. hero section, nav, pricing block). Discard unrelated page chrome unless needed for context.
+4. **Reconstruct faithfully** — reproduce each target section in the mockup as a self-contained HTML/CSS block. The goal is **pixel-level fidelity** to the live site, not a rough approximation:
+   - Preserve the exact HTML structure, class names, and nesting
+   - Inline all relevant CSS (extract from `<style>` tags or inline styles in the fetched HTML)
+   - Keep real content (text, image URLs, links) — do not replace with placeholders
+   - If the page uses a CDN font (e.g. Google Fonts), include the `<link>` in the mockup `<head>`
+   - If images use relative paths, convert to absolute URLs pointing at the live site
+5. **Label as "Current Live"** — v1 gets a design-note callout:
+   ```html
+   <div class="design-note info">
+     <strong>Source:</strong> Captured from <code>{{URL}}</code> — this is the
+     current live state.
+   </div>
+   ```
+6. **Apply requested changes as v2** — if the user asked for specific changes, add them as v2 in the same section with design-note callouts explaining each change. If no changes were requested, stop at v1 and wait for feedback.
+
+### When WebFetch is insufficient
+
+Some pages require JavaScript to render (SPAs, client-rendered content). If WebFetch returns a mostly-empty shell:
+
+- **Check for codebase access** — if source files are available, read the relevant component files directly and reconstruct from source
+- **Ask the user** — they can paste the rendered HTML from browser DevTools (right-click → Copy → Copy outerHTML on the relevant section)
+- **Use screenshots** — ask the user to provide a screenshot for visual reference, then reconstruct manually
+
+### Live capture + codebase hybrid
+
+When working within a project repo (e.g. this codebase), optionally supplement WebFetch with source file reads for higher fidelity:
+
+- Read Tailwind config for exact colors/fonts/spacing
+- Read component source for structure and class names
+- Use WebFetch output as the ground truth for what the user actually sees
 
 ## Generating a Mockup
 
