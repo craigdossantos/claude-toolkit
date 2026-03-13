@@ -1,0 +1,454 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>{{QA_TITLE}}</title>
+    <style>
+      * {
+        margin: 0;
+        padding: 0;
+        box-sizing: border-box;
+      }
+      body {
+        font-family:
+          -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+        background: #f5f5f0;
+        color: #333;
+      }
+
+      /* ── Sticky Nav ── */
+      .qa-nav {
+        position: sticky;
+        top: 0;
+        z-index: 100;
+        background: #1e1e1e;
+        color: #fff;
+        padding: 10px 16px;
+        display: flex;
+        gap: 6px;
+        flex-wrap: wrap;
+        align-items: center;
+        box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
+      }
+      .qa-nav .title {
+        font-size: 14px;
+        font-weight: 600;
+        margin-right: 12px;
+        white-space: nowrap;
+      }
+      .qa-nav a {
+        color: #a8c8ff;
+        text-decoration: none;
+        font-size: 12px;
+        padding: 3px 8px;
+        border-radius: 4px;
+        border: 1px solid rgba(255, 255, 255, 0.15);
+        transition: background 0.15s;
+      }
+      .qa-nav a:hover {
+        background: rgba(255, 255, 255, 0.1);
+      }
+      .qa-nav .copy-all-btn {
+        margin-left: auto;
+        background: #2563eb;
+        color: #fff;
+        border: none;
+        padding: 6px 14px;
+        border-radius: 6px;
+        font-size: 12px;
+        font-weight: 600;
+        cursor: pointer;
+        font-family: inherit;
+        transition: background 0.15s;
+      }
+      .qa-nav .copy-all-btn:hover {
+        background: #1d4ed8;
+      }
+      .qa-nav .copy-all-btn.copied {
+        background: #16a34a;
+      }
+
+      /* ── Summary banner ── */
+      .qa-summary {
+        max-width: 700px;
+        margin: 24px auto 0;
+        padding: 0 16px;
+      }
+      .qa-summary .banner {
+        background: #fff;
+        border: 1px solid #e5e5e5;
+        border-radius: 10px;
+        padding: 16px 20px;
+      }
+      .qa-summary h2 {
+        font-size: 15px;
+        font-weight: 600;
+        margin-bottom: 8px;
+      }
+      .qa-summary .meta {
+        font-size: 13px;
+        color: #666;
+        line-height: 1.6;
+      }
+      .qa-summary .meta a {
+        color: #2563eb;
+        text-decoration: none;
+      }
+      .qa-summary .meta a:hover {
+        text-decoration: underline;
+      }
+      .qa-summary .progress-bar {
+        margin-top: 12px;
+        height: 6px;
+        background: #e5e7eb;
+        border-radius: 3px;
+        overflow: hidden;
+      }
+      .qa-summary .progress-fill {
+        height: 100%;
+        width: 0%;
+        border-radius: 3px;
+        transition:
+          width 0.3s,
+          background 0.3s;
+        background: #2563eb;
+      }
+      .qa-summary .progress-text {
+        font-size: 12px;
+        color: #888;
+        margin-top: 4px;
+        text-align: right;
+      }
+
+      /* ── Test section ── */
+      .test-section {
+        max-width: 700px;
+        margin: 32px auto;
+        padding: 0 16px;
+      }
+
+      .test-card {
+        background: #fff;
+        border: 1px solid #e5e5e5;
+        border-radius: 10px;
+        padding: 16px 20px;
+        transition: border-color 0.2s;
+      }
+      .test-card.result-pass {
+        border-color: #86efac;
+      }
+      .test-card.result-fail {
+        border-color: #fca5a5;
+      }
+      .test-card.result-skip {
+        border-color: #fcd34d;
+      }
+
+      .test-header {
+        display: flex;
+        align-items: flex-start;
+        gap: 10px;
+        margin-bottom: 10px;
+      }
+      .test-number {
+        background: #1e1e1e;
+        color: #fff;
+        min-width: 28px;
+        height: 28px;
+        border-radius: 6px;
+        font-size: 12px;
+        font-weight: 700;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        flex-shrink: 0;
+      }
+      .test-title {
+        font-size: 15px;
+        font-weight: 600;
+        line-height: 1.4;
+        padding-top: 3px;
+      }
+
+      .test-steps {
+        margin: 10px 0 10px 38px;
+        font-size: 13px;
+        line-height: 1.7;
+        color: #555;
+      }
+      .test-steps ol {
+        padding-left: 18px;
+      }
+      .test-steps li {
+        margin-bottom: 2px;
+      }
+      .test-steps code {
+        background: #f3f4f6;
+        padding: 1px 5px;
+        border-radius: 3px;
+        font-size: 12px;
+        color: #d946ef;
+      }
+
+      .test-expect {
+        margin: 8px 0 12px 38px;
+        font-size: 13px;
+        color: #166534;
+        background: #f0fdf4;
+        border: 1px solid #bbf7d0;
+        border-radius: 6px;
+        padding: 8px 12px;
+        line-height: 1.5;
+      }
+      .test-expect strong {
+        font-weight: 600;
+      }
+
+      /* ── Result buttons ── */
+      .test-result {
+        display: flex;
+        gap: 8px;
+        margin: 12px 0 0 38px;
+      }
+      .result-btn {
+        padding: 5px 14px;
+        border-radius: 6px;
+        border: 1px solid #d1d5db;
+        background: #f9fafb;
+        font-size: 12px;
+        font-weight: 600;
+        cursor: pointer;
+        font-family: inherit;
+        transition: all 0.15s;
+        color: #374151;
+      }
+      .result-btn:hover {
+        background: #e5e7eb;
+      }
+      .result-btn.selected {
+        color: #fff;
+        border-color: transparent;
+      }
+      .result-btn[data-result="pass"].selected {
+        background: #16a34a;
+      }
+      .result-btn[data-result="fail"].selected {
+        background: #dc2626;
+      }
+      .result-btn[data-result="skip"].selected {
+        background: #ca8a04;
+      }
+
+      /* ── Feedback area ── */
+      .feedback-area {
+        margin: 12px 0 0 38px;
+      }
+      .feedback-area label {
+        display: block;
+        font-size: 11px;
+        font-weight: 600;
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+        color: #888;
+        margin-bottom: 6px;
+      }
+      .feedback-area textarea {
+        width: 100%;
+        min-height: 60px;
+        border: 1px solid #e5e5e5;
+        border-radius: 6px;
+        padding: 10px;
+        font-family: inherit;
+        font-size: 14px;
+        line-height: 1.5;
+        resize: vertical;
+        color: #333;
+      }
+      .feedback-area textarea:focus {
+        outline: none;
+        border-color: #2563eb;
+        box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.1);
+      }
+      .feedback-area .char-count {
+        font-size: 11px;
+        color: #aaa;
+        text-align: right;
+        margin-top: 4px;
+      }
+
+      .section-divider {
+        height: 1px;
+        background: #e5e5e5;
+        max-width: 700px;
+        margin: 0 auto;
+      }
+
+      /* ── Category label ── */
+      .category-label {
+        max-width: 700px;
+        margin: 32px auto 0;
+        padding: 0 16px;
+      }
+      .category-label span {
+        background: #1e1e1e;
+        color: #fff;
+        display: inline-block;
+        padding: 4px 12px;
+        border-radius: 4px;
+        font-size: 12px;
+        font-weight: 600;
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+      }
+    </style>
+  </head>
+  <body>
+    <nav class="qa-nav">
+      <span class="title">{{QA_TITLE}}</span>
+      {{NAV_LINKS}}
+      <button class="copy-all-btn" onclick="copyAllFeedback()">
+        Copy All Feedback
+      </button>
+    </nav>
+
+    <div class="qa-summary">
+      <div class="banner">
+        <h2>{{QA_SUBTITLE}}</h2>
+        <div class="meta">{{QA_META}}</div>
+        <div class="progress-bar">
+          <div class="progress-fill" id="progressFill"></div>
+        </div>
+        <div class="progress-text" id="progressText">
+          0 of {{TOTAL_TESTS}} completed
+        </div>
+      </div>
+    </div>
+
+    {{SECTIONS}}
+
+    <div style="height: 80px"></div>
+
+    <script>
+      // ── Result buttons ──
+      document.querySelectorAll(".result-btn").forEach((btn) => {
+        btn.addEventListener("click", () => {
+          const section = btn.closest(".test-section");
+          const card = section.querySelector(".test-card");
+          const buttons = section.querySelectorAll(".result-btn");
+
+          buttons.forEach((b) => b.classList.remove("selected"));
+          btn.classList.add("selected");
+
+          card.classList.remove("result-pass", "result-fail", "result-skip");
+          card.classList.add("result-" + btn.dataset.result);
+
+          updateProgress();
+        });
+      });
+
+      // ── Progress tracking ──
+      function updateProgress() {
+        const total = document.querySelectorAll(".test-section").length;
+        const done = document.querySelectorAll(".result-btn.selected").length;
+        const passed = document.querySelectorAll(
+          '.result-btn[data-result="pass"].selected',
+        ).length;
+        const failed = document.querySelectorAll(
+          '.result-btn[data-result="fail"].selected',
+        ).length;
+
+        const pct = total > 0 ? Math.round((done / total) * 100) : 0;
+        const fill = document.getElementById("progressFill");
+        const text = document.getElementById("progressText");
+
+        fill.style.width = pct + "%";
+        if (failed > 0) {
+          fill.style.background = "#dc2626";
+        } else if (done === total) {
+          fill.style.background = "#16a34a";
+        } else {
+          fill.style.background = "#2563eb";
+        }
+
+        const parts = [`${done} of ${total} completed`];
+        if (passed > 0) parts.push(`${passed} passed`);
+        if (failed > 0) parts.push(`${failed} failed`);
+        text.textContent = parts.join(" · ");
+      }
+
+      // ── Copy All Feedback ──
+      function copyAllFeedback() {
+        const tests = {};
+        document.querySelectorAll(".test-section").forEach((section) => {
+          const id = section.dataset.testId;
+          const title =
+            section.querySelector(".test-title")?.textContent?.trim() || id;
+          const textarea = section.querySelector("textarea");
+          const selectedBtn = section.querySelector(".result-btn.selected");
+          const result = selectedBtn ? selectedBtn.dataset.result : null;
+          const feedback = textarea ? textarea.value.trim() : "";
+
+          if (result || feedback) {
+            tests[id] = { title, result: result || "untested" };
+            if (feedback) tests[id].feedback = feedback;
+          }
+        });
+
+        if (Object.keys(tests).length === 0) {
+          alert(
+            "No results or feedback entered yet. Mark tests and add notes first.",
+          );
+          return;
+        }
+
+        const passed = Object.values(tests).filter(
+          (t) => t.result === "pass",
+        ).length;
+        const failed = Object.values(tests).filter(
+          (t) => t.result === "fail",
+        ).length;
+        const skipped = Object.values(tests).filter(
+          (t) => t.result === "skip",
+        ).length;
+
+        const json = JSON.stringify(
+          {
+            qa_checklist: document.title,
+            timestamp: new Date().toISOString(),
+            summary: {
+              passed,
+              failed,
+              skipped,
+              total: Object.keys(tests).length,
+            },
+            tests,
+          },
+          null,
+          2,
+        );
+
+        navigator.clipboard.writeText(json).then(() => {
+          const btn = document.querySelector(".copy-all-btn");
+          btn.textContent = "Copied!";
+          btn.classList.add("copied");
+          setTimeout(() => {
+            btn.textContent = "Copy All Feedback";
+            btn.classList.remove("copied");
+          }, 2000);
+        });
+      }
+
+      // ── Textarea char counts ──
+      document.querySelectorAll(".feedback-area textarea").forEach((ta) => {
+        const counter = ta.parentElement.querySelector(".char-count");
+        if (!counter) return;
+        ta.addEventListener("input", () => {
+          counter.textContent = ta.value.length
+            ? `${ta.value.length} chars`
+            : "";
+        });
+      });
+    </script>
+  </body>
+</html>
