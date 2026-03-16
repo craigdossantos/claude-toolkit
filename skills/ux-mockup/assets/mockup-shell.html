@@ -7,8 +7,8 @@
     <style>
       /*
        * UX Mockup Shell — provides feedback UI, version history,
-       * and clipboard export. Claude fills in the actual design
-       * content inside each .mockup-section.
+       * viewport toggle, and clipboard export. Claude fills in the
+       * actual design content inside each .mockup-section.
        *
        * STRUCTURE:
        *   .mockup-section[data-section-id]
@@ -64,6 +64,44 @@
       .mockup-nav a:hover {
         background: rgba(255, 255, 255, 0.1);
       }
+
+      /* ── Viewport Toggle ── */
+      .viewport-toggle {
+        display: flex;
+        gap: 2px;
+        margin-left: 8px;
+        background: rgba(255, 255, 255, 0.08);
+        border-radius: 6px;
+        padding: 2px;
+      }
+      .viewport-toggle button {
+        background: transparent;
+        border: none;
+        color: rgba(255, 255, 255, 0.5);
+        padding: 4px 10px;
+        border-radius: 4px;
+        font-size: 12px;
+        font-weight: 600;
+        cursor: pointer;
+        font-family: inherit;
+        transition: all 0.15s;
+        display: flex;
+        align-items: center;
+        gap: 4px;
+      }
+      .viewport-toggle button:hover {
+        color: rgba(255, 255, 255, 0.8);
+      }
+      .viewport-toggle button.active {
+        background: rgba(255, 255, 255, 0.15);
+        color: #fff;
+      }
+      .viewport-toggle svg {
+        width: 14px;
+        height: 14px;
+        fill: currentColor;
+      }
+
       .mockup-nav .copy-all-btn {
         margin-left: auto;
         background: #2563eb;
@@ -92,6 +130,61 @@
       }
       .mockup-section.wide {
         max-width: 800px;
+      }
+
+      /* ── Viewport-aware section widths ── */
+      body.viewport-mobile .mockup-section,
+      body.viewport-mobile .mockup-section.wide {
+        max-width: 600px;
+      }
+      body.viewport-desktop .mockup-section {
+        max-width: 900px;
+      }
+      body.viewport-desktop .mockup-section.wide {
+        max-width: 1200px;
+      }
+
+      /* ── Iframe frame for live-capture sections ── */
+      .iframe-frame {
+        border: 1px solid #ddd;
+        border-radius: 8px;
+        overflow: hidden;
+        background: #fff;
+        position: relative;
+        transition: width 0.3s ease;
+        margin: 0 auto;
+      }
+      .iframe-frame iframe {
+        width: 100%;
+        border: none;
+        display: block;
+      }
+      /* Mobile viewport constrains iframe-frame width */
+      body.viewport-mobile .iframe-frame {
+        max-width: 375px;
+      }
+      body.viewport-desktop .iframe-frame {
+        max-width: 100%;
+      }
+      /* Device chrome hint for mobile */
+      body.viewport-mobile .iframe-frame::before {
+        content: "";
+        display: block;
+        height: 24px;
+        background: #f3f4f6;
+        border-bottom: 1px solid #e5e5e5;
+        border-radius: 8px 8px 0 0;
+      }
+      body.viewport-mobile .iframe-frame::after {
+        content: "";
+        display: block;
+        width: 40px;
+        height: 4px;
+        border-radius: 2px;
+        background: #d1d5db;
+        margin: -16px auto 0;
+        position: relative;
+        top: -4px;
       }
 
       .section-label {
@@ -212,6 +305,20 @@
         margin-top: 4px;
       }
 
+      /* ── Viewport indicator badge ── */
+      .feedback-area .viewport-badge {
+        display: inline-block;
+        font-size: 10px;
+        font-weight: 600;
+        text-transform: uppercase;
+        letter-spacing: 0.06em;
+        padding: 2px 6px;
+        border-radius: 3px;
+        background: #e5e7eb;
+        color: #6b7280;
+        margin-left: 6px;
+      }
+
       /* ── Design note callouts ── */
       .design-note {
         background: #fffbeb;
@@ -238,11 +345,36 @@
       }
     </style>
   </head>
-  <body>
+  <body class="viewport-desktop">
     <nav class="mockup-nav">
       <span class="title">{{MOCKUP_TITLE}}</span>
       <!-- NAV_LINKS: Claude generates anchor links here -->
       {{NAV_LINKS}}
+
+      <!-- Viewport Toggle -->
+      <div class="viewport-toggle">
+        <button data-viewport="mobile" title="Mobile (375px)">
+          <svg viewBox="0 0 24 24">
+            <path
+              d="M7 2h10a2 2 0 012 2v16a2 2 0 01-2 2H7a2 2 0 01-2-2V4a2 2 0 012-2zm5 18a1 1 0 100-2 1 1 0 000 2z"
+            />
+          </svg>
+          Mobile
+        </button>
+        <button
+          data-viewport="desktop"
+          class="active"
+          title="Desktop (full width)"
+        >
+          <svg viewBox="0 0 24 24">
+            <path
+              d="M3 4h18a1 1 0 011 1v11a1 1 0 01-1 1H3a1 1 0 01-1-1V5a1 1 0 011-1zm5 16h8m-4-3v3"
+            />
+          </svg>
+          Desktop
+        </button>
+      </div>
+
       <button class="copy-all-btn" onclick="copyAllFeedback()">
         Copy All Feedback
       </button>
@@ -254,6 +386,30 @@
     <div style="height: 80px"></div>
 
     <script>
+      // ── Viewport Toggle ──
+      function initViewportToggle() {
+        const buttons = document.querySelectorAll(".viewport-toggle button");
+        buttons.forEach((btn) => {
+          btn.addEventListener("click", () => {
+            const viewport = btn.dataset.viewport;
+            // Update button states
+            buttons.forEach((b) => b.classList.remove("active"));
+            btn.classList.add("active");
+            // Update body class
+            document.body.classList.remove(
+              "viewport-mobile",
+              "viewport-desktop",
+            );
+            document.body.classList.add(`viewport-${viewport}`);
+            // Update viewport badges in feedback areas
+            document.querySelectorAll(".viewport-badge").forEach((badge) => {
+              badge.textContent = viewport;
+            });
+          });
+        });
+      }
+      initViewportToggle();
+
       // ── Version History ──
       function initVersionNav() {
         document.querySelectorAll(".mockup-section").forEach((section) => {
@@ -266,7 +422,7 @@
           const prevBtn = nav.querySelector('[data-dir="prev"]');
           const nextBtn = nav.querySelector('[data-dir="next"]');
 
-          let current = versions.length; // start on latest
+          let current = 1; // start on v1 (entry state)
 
           function show(idx) {
             versions.forEach((v) => v.classList.remove("active"));
@@ -284,7 +440,7 @@
             if (current < versions.length) show(current + 1);
           });
 
-          show(versions.length); // default to latest
+          show(1); // default to v1 (entry state)
         });
       }
 
@@ -301,6 +457,12 @@
       // ── Copy All Feedback ──
       function copyAllFeedback() {
         const feedback = {};
+        const currentViewport = document.body.classList.contains(
+          "viewport-mobile",
+        )
+          ? "mobile"
+          : "desktop";
+
         document.querySelectorAll(".mockup-section").forEach((section) => {
           const id = section.dataset.sectionId;
           const textarea = section.querySelector("textarea");
@@ -314,6 +476,7 @@
               feedback: textarea.value.trim(),
               viewing_version: parseInt(versionNum),
               total_versions: versions.length,
+              viewport: currentViewport,
             };
           }
         });
@@ -327,6 +490,7 @@
           {
             mockup: document.title,
             timestamp: new Date().toISOString(),
+            viewport: currentViewport,
             sections: feedback,
           },
           null,

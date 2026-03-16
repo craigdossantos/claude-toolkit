@@ -1,16 +1,16 @@
 ---
 name: ux-mockup
-description: Create interactive HTML mockups for UX design review with built-in feedback collection, version history, and clipboard export. Supports two modes — (1) from-scratch mockups for new designs, and (2) live-capture mockups that start from an existing site/page and iterate on it. Use when designing UI flows, page layouts, or component states that need visual review and iterative feedback. Triggers on "mockup", "UX design", "design review", "visual design", "UI mockup", "mock up the flow", "show me what it looks like", "mockup changes to the live site", "iterate on the existing page", "redesign this page", or any request to create visual designs for review before implementation.
+description: Create interactive HTML mockups for UX design review with built-in feedback collection, version history, viewport toggle (mobile/desktop), and clipboard export. Supports two modes — (1) from-scratch mockups for new designs, and (2) live-capture mockups that embed the actual existing site UI and iterate on it. Use when designing UI flows, page layouts, or component states that need visual review and iterative feedback. Triggers on "mockup", "UX design", "design review", "visual design", "UI mockup", "mock up the flow", "show me what it looks like", "mockup changes to the live site", "iterate on the existing page", "redesign this page", or any request to create visual designs for review before implementation.
 ---
 
 # UX Mockup
 
-Create self-contained HTML mockup pages for iterative UX design review. The mockup includes per-section feedback textareas, version history navigation, and one-click JSON clipboard export.
+Create self-contained HTML mockup pages for iterative UX design review. The mockup includes per-section feedback textareas, version history navigation, mobile/desktop viewport toggle, and one-click JSON clipboard export.
 
 Supports two modes:
 
 - **From scratch** — design new pages/components with no existing reference
-- **Live capture** — start from an existing site or local dev server page, then iterate
+- **Live capture** — start from the actual existing site UI and iterate on it
 
 ## Workflow
 
@@ -24,54 +24,158 @@ Supports two modes:
 
 ## Live Capture Mode
 
-Use this mode when starting from an existing live site or local dev server page. The goal is to faithfully reproduce the current page as v1, then iterate changes on top.
+Use this mode when reviewing an existing live site or local dev server page. **The goal is pixel-perfect reproduction of the actual site UI, not an approximation.**
 
-### Live capture workflow
+### Critical rule: use the real UI
 
-1. **Get the URL** — ask the user for the page URL (production, staging, or `localhost`)
-2. **Fetch the page** — use `WebFetch` to retrieve the full HTML of the page
-3. **Extract the relevant sections** — identify the portions of the page the user wants to iterate on (e.g. hero section, nav, pricing block). Discard unrelated page chrome unless needed for context.
-4. **Reconstruct faithfully** — reproduce each target section in the mockup as a self-contained HTML/CSS block. The goal is **pixel-level fidelity** to the live site, not a rough approximation:
-   - Preserve the exact HTML structure, class names, and nesting
-   - Inline all relevant CSS (extract from `<style>` tags or inline styles in the fetched HTML)
-   - Keep real content (text, image URLs, links) — do not replace with placeholders
-   - If the page uses a CDN font (e.g. Google Fonts), include the `<link>` in the mockup `<head>`
-   - If images use relative paths, convert to absolute URLs pointing at the live site
-5. **Label as "Current Live"** — v1 gets a design-note callout:
-   ```html
-   <div class="design-note info">
-     <strong>Source:</strong> Captured from <code>{{URL}}</code> — this is the
-     current live state.
-   </div>
-   ```
-6. **Apply requested changes as v2** — if the user asked for specific changes, add them as v2 in the same section with design-note callouts explaining each change. If no changes were requested, stop at v1 and wait for feedback.
+**NEVER re-create or approximate an existing site's UI.** The whole point of live-capture is that the user sees exactly what their users see. A hand-drawn mockup that looks "similar" defeats the purpose.
 
-### When WebFetch is insufficient
+### Live capture strategies (in priority order)
 
-Some pages require JavaScript to render (SPAs, client-rendered content). If WebFetch returns a mostly-empty shell:
+#### Strategy 1: iframe embedding (preferred for live/staging URLs)
 
-- **Check for codebase access** — if source files are available, read the relevant component files directly and reconstruct from source
-- **Ask the user** — they can paste the rendered HTML from browser DevTools (right-click → Copy → Copy outerHTML on the relevant section)
-- **Use screenshots** — ask the user to provide a screenshot for visual reference, then reconstruct manually
+Embed the actual page in an iframe. This gives 100% fidelity with zero reconstruction effort:
 
-### Live capture + codebase hybrid
+```html
+<div class="iframe-frame">
+  <iframe src="https://example.com/page" style="height:800px"></iframe>
+</div>
+```
 
-When working within a project repo (e.g. this codebase), optionally supplement WebFetch with source file reads for higher fidelity:
+The `.iframe-frame` wrapper responds to the viewport toggle — mobile view constrains it to 375px with device chrome, desktop shows full width.
 
-- Read Tailwind config for exact colors/fonts/spacing
-- Read component source for structure and class names
-- Use WebFetch output as the ground truth for what the user actually sees
+**When to use:** When the page is publicly accessible (production, staging, or user can run `npm run dev` on localhost).
+
+**Limitations:** Cross-origin restrictions may block some interactions. The user cannot modify the iframe content for iteration. Use this for the "current state" v1, then switch to inline HTML for v2+ iterations.
+
+#### Strategy 2: inline verbatim HTML (preferred for auth-protected or dynamic pages)
+
+Use this when iframes won't work — auth-protected pages (dashboard, admin), dynamic pages that need a specific slug/ID, or pages with third-party auth (Google OAuth buttons that won't function in iframes).
+
+When working within a project repo, extract the **actual rendered HTML and CSS** and inline it:
+
+1. Read the page's component source files and the project's CSS/Tailwind config
+2. Build the section using the **exact same HTML structure, class names, and styles** from source
+3. Include all project CSS — either inline the relevant Tailwind output or include `<style>` blocks with the project's design tokens and utility classes
+4. Populate with **realistic sample data** — real-looking names, counts, statuses — not lorem ipsum or empty states (unless reviewing the empty state specifically)
+5. For pages with multiple states (e.g. draft vs active), show the most representative state with design-note callouts explaining other states
+
+**The output should be indistinguishable from the live site at a glance.** This means:
+
+- Use the project's actual fonts (include Google Fonts `<link>` tags)
+- Use the project's exact color values from CSS/Tailwind config
+- Replicate the exact component hierarchy and class structure
+- Match spacing, border-radius, shadows, and typography exactly
+
+**When to choose Strategy 2 over Strategy 1:**
+
+- Page requires authentication (login redirects in iframe)
+- Page requires dynamic data (project IDs, slugs) that the reviewer may not have
+- Third-party auth buttons (Google, GitHub) that break in iframe sandboxing
+- Mockup needs to be shareable via a static URL (no login required to view)
+
+#### Strategy 3: WebFetch + reconstruction
+
+When no codebase access exists:
+
+1. Use `WebFetch` to retrieve the full page HTML
+2. Extract the complete `<style>` blocks, `<link>` tags, and inline styles
+3. Preserve the exact DOM structure — do not simplify, rearrange, or "clean up" the HTML
+4. Convert relative URLs to absolute URLs
+5. Include CDN fonts via `<link>` in the mockup `<head>`
+
+#### When all strategies fail
+
+- **Ask the user** to paste rendered HTML from DevTools (right-click → Copy → Copy outerHTML)
+- **Ask for a screenshot** and reconstruct manually (this is the only case where approximation is acceptable — and must be clearly labeled as such)
+
+### Labeling live-captured content
+
+v1 of a live-captured section always gets this callout:
+
+```html
+<div class="design-note info">
+  <strong>Source:</strong> Captured from <code>{{URL_OR_SOURCE}}</code> — this
+  is the current live state.
+</div>
+```
+
+If forced to approximate (e.g. from a screenshot), use a warning callout instead:
+
+```html
+<div class="design-note">
+  <strong>Warning:</strong> Approximated from screenshot — not pixel-perfect.
+  Verify against live site.
+</div>
+```
+
+## Viewport Toggle
+
+The mockup shell includes a **Mobile / Desktop** toggle in the sticky nav bar:
+
+- **Desktop** (default) — sections use full width (900px / 1200px for `.wide`)
+- **Mobile** — sections constrain to 600px, iframe frames show at 375px with device chrome
+
+The toggle:
+
+- Adds `viewport-mobile` or `viewport-desktop` class to `<body>`
+- Automatically constrains `.iframe-frame` elements to mobile width
+- Includes the current viewport in the exported feedback JSON
+
+### Designing for both viewports
+
+When creating mockup sections, ensure content works at both widths:
+
+- Use responsive CSS within version content (flex-wrap, max-width, etc.)
+- For iframe embeds, the responsive behavior comes from the site itself
+- For inline HTML, replicate the project's responsive breakpoints
+
+## Journey States
+
+Pages often have multiple states. Use the version nav (prev/next) to let reviewers flip between them. But don't show every possible permutation — focus on the **journey states** a user passes through:
+
+1. **Entry** (v1, always) — what the user sees when they first arrive. This is the most important state and must always be version 1.
+2. **Primary action** — the page doing its main job (e.g. actively recording, form half-filled)
+3. **Completion** — what success looks like (e.g. all prompts recorded, order confirmed)
+4. **Error/empty** — only include if there's a specific UX concern worth reviewing (e.g. empty dashboard for onboarding flow)
+
+### How many states per page?
+
+| Page type          | Typical states | Example                                            |
+| ------------------ | -------------- | -------------------------------------------------- |
+| Static/info page   | 1              | Homepage, about, pricing                           |
+| Form/single action | 1–2            | Create page, sign-in                               |
+| Multi-step flow    | 2–4            | Contributor recording (entry → recording → finish) |
+| Data display       | 1–2            | Dashboard (populated, maybe empty)                 |
+| Playback/viewer    | 1              | Gift page                                          |
+
+Most pages need just 1 state. Multi-step flows are the exception.
+
+### Label each state clearly
+
+Each version should have a design-note at the top explaining what the user is seeing:
+
+```html
+<div class="design-note info">
+  <strong>State — Entry:</strong> First visit, no recordings yet. Contributor
+  sees hero + "Start Recording" CTA.
+</div>
+```
+
+### Version nav defaults to v1
+
+The shell JS defaults to showing version 1 (entry state) so reviewers see the first impression first. They can navigate forward to see the flow progression.
 
 ## Generating a Mockup
 
 Use `assets/mockup-shell.html` as the structural reference. Build a single self-contained HTML file at `docs/mockups/<name>.html` with:
 
-- **Sticky nav bar** — title + anchor links to each section + "Copy All Feedback" button
+- **Sticky nav bar** — title + anchor links + viewport toggle + "Copy All Feedback" button
 - **Sections** — one per state/page/component, each wrapped in `.mockup-section[data-section-id]`
 - **Version containers** — design content inside `.version[data-version="1"]`
 - **Feedback area** — textarea under each section
 - **Version nav** — prev/next buttons (hidden until v2+ exists)
-- **All CSS/JS inline** — no external dependencies
+- **All CSS/JS inline** — no external dependencies except fonts
 
 ### Section structure
 
@@ -106,8 +210,6 @@ Use `assets/mockup-shell.html` as the structural reference. Build a single self-
 ```
 
 ### Design note callouts
-
-Use callouts to annotate design decisions:
 
 ```html
 <div class="design-note">
@@ -155,8 +257,6 @@ After iteration (v1 + v2):
 </div>
 ```
 
-The user can flip between v1 and v2 using the prev/next buttons on that section.
-
 ## Feedback JSON Format
 
 When the user clicks "Copy All Feedback", this JSON is copied to clipboard:
@@ -165,26 +265,24 @@ When the user clicks "Copy All Feedback", this JSON is copied to clipboard:
 {
   "mockup": "Page Title",
   "timestamp": "2026-02-18T...",
+  "viewport": "mobile",
   "sections": {
     "state1": {
       "feedback": "The button should be larger...",
       "viewing_version": 2,
-      "total_versions": 2
-    },
-    "state4": {
-      "feedback": "Arrow should point left...",
-      "viewing_version": 1,
-      "total_versions": 1
+      "total_versions": 2,
+      "viewport": "mobile"
     }
   }
 }
 ```
 
-Parse this to understand which sections have feedback and which version the user was viewing when they wrote it.
+Parse this to understand which sections have feedback, which version was viewed, and whether feedback was given while viewing mobile or desktop.
 
 ## Styling Guidelines
 
-- Match the project's visual style when possible (read existing CSS/Tailwind config)
+- **Live capture:** use the exact project styles — never substitute your own
+- **From scratch:** match the project's visual style when possible (read existing CSS/Tailwind config)
 - Use project colors and fonts if available
 - Fall back to clean, neutral styling from the shell template
 - Keep mockups realistic — use real-looking content, not lorem ipsum
@@ -198,3 +296,4 @@ Parse this to understand which sections have feedback and which version the user
 - **Self-contained** — all CSS and JS inline, no CDN dependencies except fonts
 - **Feedback areas always present** — every section gets a textarea
 - **Open after generating** — always run `open <path>` after creating or updating
+- **Never approximate when you can embed** — iframe or verbatim HTML over hand-drawn mockups
