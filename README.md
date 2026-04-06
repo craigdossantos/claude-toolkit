@@ -23,27 +23,27 @@ cd claude-toolkit
 
 ### Skills
 
-| Skill             | Description                                                                                                                                                          |
-| ----------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `harness-profile` | Generate a visual report of your Claude Code setup — skills, hooks, CLI tools, agent patterns, and more. Like `/insights` but focused on your harness configuration. |
-| `init`            | Bootstrap new projects with frontend design and skill creation capabilities                                                                                          |
-| `testing-webapps` | Test web apps with Claude for Chrome (visual/interactive) or Playwright (automated/CI)                                                                               |
-| `frontend-design` | Create distinctive, production-grade frontend interfaces that avoid generic AI aesthetics                                                                            |
+| Skill             | Description                                                                                                                                                               |
+| ----------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `insight-harness` | A superset of `/insights` — generates a comprehensive profile with token usage, tool breakdowns, skill inventory, hooks, and more. Upload to insightharness.com to share. |
+| `init`            | Bootstrap new projects with frontend design and skill creation capabilities                                                                                               |
+| `testing-webapps` | Test web apps with Claude for Chrome (visual/interactive) or Playwright (automated/CI)                                                                                    |
+| `frontend-design` | Create distinctive, production-grade frontend interfaces that avoid generic AI aesthetics                                                                                 |
 
-### Quick Install: Harness Profile
+### Quick Install: Insight Harness
 
-Generate a visual report of how you use Claude Code — no project content exposed, just harness metadata:
+A superset of `/insights` — everything you get from `/insights` plus token usage, tool breakdowns, skill inventory, hooks, and more. Upload to [insightharness.com](https://insightharness.com) to share your profile:
 
 ```bash
-mkdir -p ~/.claude/skills/harness-profile/scripts && \
-curl -sL https://raw.githubusercontent.com/craigdossantos/claude-toolkit/main/skills/harness-profile/SKILL.md \
-  -o ~/.claude/skills/harness-profile/SKILL.md && \
-curl -sL https://raw.githubusercontent.com/craigdossantos/claude-toolkit/main/skills/harness-profile/scripts/extract.py \
-  -o ~/.claude/skills/harness-profile/scripts/extract.py && \
-open "$(python3 ~/.claude/skills/harness-profile/scripts/extract.py)"
+mkdir -p ~/.claude/skills/insight-harness/scripts && \
+curl -sL https://raw.githubusercontent.com/craigdossantos/claude-toolkit/main/skills/insight-harness/SKILL.md \
+  -o ~/.claude/skills/insight-harness/SKILL.md && \
+curl -sL https://raw.githubusercontent.com/craigdossantos/claude-toolkit/main/skills/insight-harness/scripts/extract.py \
+  -o ~/.claude/skills/insight-harness/scripts/extract.py && \
+open "$(python3 ~/.claude/skills/insight-harness/scripts/extract.py)"
 ```
 
-This installs the skill and immediately generates your report. The report saves to `~/.claude/usage-data/harness-profile.html` (alongside the `/insights` report). After installing, you can also run it anytime in Claude Code with `/harness-profile`.
+This installs the skill and immediately generates your report. The report saves to `~/.claude/usage-data/insight-harness.html` (alongside the `/insights` report). After installing, you can also run it anytime in Claude Code with `/insight-harness`.
 
 ### Agents
 
