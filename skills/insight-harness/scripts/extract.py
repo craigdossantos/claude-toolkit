@@ -597,6 +597,414 @@ def extract_insights_report():
     }
 
 
+# ── New Config Layer Extractors ────────────────────────────────────────────
+
+def extract_safety_posture():
+    """Dangermode, custom safety hooks, universal denies."""
+    settings = safe_json_load(CLAUDE_DIR / "settings.json") or {}
+    skip_danger = settings.get("skipDangerousModePermissionPrompt", False)
+    has_custom_safety = False
+    safety_hooks = []
+    for event, matchers in settings.get("hooks", {}).items():
+        for mb in matchers:
+            for h in mb.get("hooks", []):
+                cmd = h.get("command", "")
+                if "auto_approve" in cmd or "dcg" in cmd or "validate_file" in cmd:
+                    has_custom_safety = True
+                    name = "dcg" if "dcg" in cmd else re.search(r'(\w+\.py)', cmd)
+                    safety_hooks.append(name.group(1) if hasattr(name, 'group') else name)
+
+    # Universal denies across projects
+    deny_rules = Counter()
+    coding_dir = Path.home() / "Coding"
+    if coding_dir.exists():
+        for sf in coding_dir.rglob(".claude/settings.json"):
+            if len(sf.parts) > 10:
+                continue
+            data = safe_json_load(sf)
+            if data:
+                for d in data.get("permissions", {}).get("deny", []):
+                    if isinstance(d, str):
+                        deny_rules[d] += 1
+
+    return {
+        "skip_danger_prompt": skip_danger,
+        "has_custom_safety": has_custom_safety,
+        "safety_hooks": list(set(safety_hooks)),
+        "custom_safety_label": "Custom Safety Gate" if has_custom_safety else "Stock Permissions",
+        "universal_denies": [r for r, c in deny_rules.most_common(10) if c >= 2],
+    }
+
+
+def extract_experimental_features():
+    """Env vars matching CLAUDE_CODE_EXPERIMENTAL_*."""
+    settings = safe_json_load(CLAUDE_DIR / "settings.json") or {}
+    env = settings.get("env", {})
+    experimental = {k: v for k, v in env.items() if "EXPERIMENTAL" in k.upper()}
+    other_env = {k: v for k, v in env.items() if "EXPERIMENTAL" not in k.upper()}
+    return {"experimental_flags": experimental, "other_env_flags": other_env}
+
+
+def extract_stats_cache():
+    """Peak usage, model timeline, per-model token breakdown from stats-cache.json."""
+    data = safe_json_load(CLAUDE_DIR / "stats-cache.json")
+    if not data:
+        return {}
+
+    daily = data.get("dailyActivity", [])
+    model_usage = data.get("modelUsage", {})
+
+    # Peak day
+    peak_day = max(daily, key=lambda d: d.get("messageCount", 0)) if daily else {}
+    total_messages = sum(d.get("messageCount", 0) for d in daily)
+    total_sessions_cache = sum(d.get("sessionCount", 0) for d in daily)
+    avg_daily = total_messages // len(daily) if daily else 0
+
+    # Model timeline (first/last seen)
+    model_timeline = {}
+    for d in daily:
+        date = d.get("date", "")
+        # Check if model info is in the daily entry
+        for key in d:
+            if key.startswith("model_") or "model" in key.lower():
+                pass  # stats-cache doesn't have per-day model split
+
+    # Per-model token breakdown
+    model_tokens = {}
+    for model, usage in model_usage.items():
+        if isinstance(usage, dict):
+            model_tokens[model] = {
+                "input": usage.get("inputTokens", 0),
+                "output": usage.get("outputTokens", 0),
+                "cache_read": usage.get("cacheReadTokens", usage.get("cache_read_input_tokens", 0)),
+                "cache_create": usage.get("cacheCreationTokens", usage.get("cache_creation_input_tokens", 0)),
+            }
+
+    # Cache efficiency
+    total_cache_read = sum(m.get("cache_read", 0) for m in model_tokens.values())
+    total_direct_input = sum(m.get("input", 0) for m in model_tokens.values())
+    cache_ratio = round(total_cache_read / total_direct_input) if total_direct_input > 0 else 0
+
+    return {
+        "peak_day_messages": peak_day.get("messageCount", 0),
+        "peak_day_sessions": peak_day.get("sessionCount", 0),
+        "peak_day_date": peak_day.get("date", ""),
+        "total_messages_all_time": total_messages,
+        "total_sessions_all_time": total_sessions_cache,
+        "avg_daily_messages": avg_daily,
+        "days_tracked": len(daily),
+        "model_tokens": model_tokens,
+        "cache_read_ratio": cache_ratio,
+    }
+
+
+def extract_instruction_maturity():
+    """Gen 1 vs Gen 2 project instruction patterns, CLAUDE.md headings."""
+    coding_dir = Path.home() / "Coding"
+    projects = {"gen1": 0, "gen2": 0, "none": 0, "total": 0}
+    claude_md_headings = []
+    handoff_sizes = []
+
+    # Global CLAUDE.md headings
+    global_cmd = CLAUDE_DIR / "CLAUDE.md"
+    global_headings = []
+    if global_cmd.exists():
+        try:
+            for line in global_cmd.read_text().splitlines():
+                if line.startswith("#"):
+                    global_headings.append(line.strip())
+        except IOError:
+            pass
+
+    if not coding_dir.exists():
+        return {"projects": projects, "global_headings": global_headings, "claude_md_headings": [], "handoff_sizes": []}
+
+    for proj in coding_dir.iterdir():
+        if not proj.is_dir() or proj.name.startswith('.'):
+            continue
+        projects["total"] += 1
+
+        has_claude_md = (proj / "CLAUDE.md").exists()
+        has_agents_md = (proj / "AGENTS.md").exists()
+        has_agent_bundle = (proj / "agent" / "WORKFLOWS.md").exists() or (proj / "agent" / "CONSTITUTION.md").exists()
+
+        if has_agent_bundle or has_agents_md:
+            projects["gen2"] += 1
+        elif has_claude_md:
+            projects["gen1"] += 1
+        else:
+            projects["none"] += 1
+
+        # CLAUDE.md headings (structure only)
+        if has_claude_md:
+            try:
+                lines = (proj / "CLAUDE.md").read_text().splitlines()
+                headings = [l.strip() for l in lines if l.startswith("#")]
+                claude_md_headings.append({
+                    "line_count": len(lines),
+                    "headings": headings,
+                })
+            except IOError:
+                pass
+
+        # HANDOFF.md sizes
+        handoff = proj / "agent" / "HANDOFF.md"
+        if handoff.exists():
+            try:
+                handoff_sizes.append(len(handoff.read_text().splitlines()))
+            except IOError:
+                pass
+
+    return {
+        "projects": projects,
+        "global_headings": global_headings,
+        "claude_md_headings": claude_md_headings,
+        "handoff_sizes": handoff_sizes,
+        "avg_handoff_lines": round(sum(handoff_sizes) / len(handoff_sizes)) if handoff_sizes else 0,
+    }
+
+
+def extract_memory_architecture():
+    """Dual-layer memory detection and atom type counts."""
+    in_repo_count = 0
+    claude_managed_count = 0
+    atom_types = Counter()
+
+    # In-repo agent/MEMORY.md
+    coding_dir = Path.home() / "Coding"
+    if coding_dir.exists():
+        for proj in coding_dir.iterdir():
+            if (proj / "agent" / "MEMORY.md").exists():
+                in_repo_count += 1
+
+    # Claude-managed memory
+    for proj_dir in PROJECTS_DIR.iterdir():
+        if not proj_dir.is_dir():
+            continue
+        mem_dir = proj_dir / "memory"
+        if mem_dir.exists():
+            claude_managed_count += 1
+            for f in mem_dir.glob("*.md"):
+                if f.name == "MEMORY.md":
+                    continue
+                # Classify by prefix
+                name = f.stem
+                if name.startswith("feedback"):
+                    atom_types["feedback"] += 1
+                elif name.startswith("project"):
+                    atom_types["project"] += 1
+                elif name.startswith("reference"):
+                    atom_types["reference"] += 1
+                elif name.startswith("user"):
+                    atom_types["user"] += 1
+                else:
+                    atom_types["other"] += 1
+
+    return {
+        "in_repo_memory": in_repo_count,
+        "claude_managed_memory": claude_managed_count,
+        "atom_types": dict(atom_types),
+        "total_atoms": sum(atom_types.values()),
+        "is_dual_layer": in_repo_count > 0 and claude_managed_count > 0,
+    }
+
+
+def extract_agent_details():
+    """Enhanced agent extraction: model tiering, roles, from .md files."""
+    agents = []
+    if AGENTS_DIR.exists():
+        for f in AGENTS_DIR.iterdir():
+            if f.is_file() and f.suffix == ".md":
+                agent = {"name": f.stem, "model": "inherit", "description": ""}
+                try:
+                    text = f.read_text(encoding="utf-8", errors="replace")
+                    # Parse frontmatter-style or inline model/description
+                    for line in text.splitlines()[:20]:
+                        if line.strip().startswith("model:"):
+                            agent["model"] = line.split(":", 1)[1].strip().strip('"')
+                        elif "description:" in line.lower():
+                            agent["description"] = line.split(":", 1)[1].strip()[:100]
+                except IOError:
+                    pass
+                agents.append(agent)
+
+    # Tiering summary
+    tiers = {"opus": [], "sonnet": [], "haiku": [], "inherit": []}
+    for a in agents:
+        m = a["model"].lower()
+        if "opus" in m:
+            tiers["opus"].append(a["name"])
+        elif "haiku" in m:
+            tiers["haiku"].append(a["name"])
+        elif "sonnet" in m:
+            tiers["sonnet"].append(a["name"])
+        else:
+            tiers["inherit"].append(a["name"])
+
+    return {"agents": agents, "tiers": tiers}
+
+
+def extract_team_configs():
+    """Team configurations from ~/.claude/teams/."""
+    teams_dir = CLAUDE_DIR / "teams"
+    teams = []
+    if teams_dir.exists():
+        for td in teams_dir.iterdir():
+            if td.is_dir():
+                config = safe_json_load(td / "config.json")
+                team = {"name_hash": hashlib.sha256(td.name.encode()).hexdigest()[:8], "has_config": config is not None}
+                if config:
+                    members = config.get("agents", config.get("members", []))
+                    team["member_count"] = len(members) if isinstance(members, list) else 0
+                    # Check for team lead
+                    lead = config.get("lead", config.get("teamLead", {}))
+                    if isinstance(lead, dict):
+                        team["lead_model"] = lead.get("model", "unknown")
+                teams.append(team)
+    return {"teams": teams, "team_count": len(teams)}
+
+
+def extract_marketplace_diversity():
+    """Which plugin marketplaces are configured."""
+    data = safe_json_load(PLUGINS_DIR / "known_marketplaces.json")
+    marketplaces = []
+    if isinstance(data, dict):
+        for name, info in data.items():
+            if isinstance(info, dict):
+                marketplaces.append({"name": name, "url": info.get("url", info.get("git", ""))})
+            elif isinstance(info, str):
+                marketplaces.append({"name": name, "url": info})
+    elif isinstance(data, list):
+        for item in data:
+            if isinstance(item, dict):
+                marketplaces.append({"name": item.get("name", "unknown"), "url": item.get("url", item.get("git", ""))})
+    return {"marketplaces": marketplaces, "count": len(marketplaces)}
+
+
+def extract_statusline():
+    """Statusline plugin details."""
+    sh_path = CLAUDE_DIR / "statusline.sh"
+    if not sh_path.exists():
+        return {"configured": False}
+    try:
+        text = sh_path.read_text(encoding="utf-8", errors="replace")
+        lines = len(text.splitlines())
+        # Try to find package name/version
+        pkg_name = ""
+        version = ""
+        for line in text.splitlines()[:30]:
+            if "cc-statusline" in line or "@" in line:
+                pkg_name = line.strip().lstrip("# ").strip()
+                break
+            if "VERSION" in line or "version" in line:
+                version = line.strip()
+        return {"configured": True, "lines": lines, "package_hint": pkg_name[:80], "version_hint": version[:40]}
+    except IOError:
+        return {"configured": False}
+
+
+def extract_ide_integration():
+    """Check for IDE integration (VS Code WebSocket)."""
+    ide_dir = CLAUDE_DIR / "ide"
+    if not ide_dir.exists():
+        return {"mode": "terminal-only"}
+    lock_files = list(ide_dir.glob("*.lock"))
+    if lock_files:
+        return {"mode": "vs-code", "connections": len(lock_files)}
+    return {"mode": "terminal-only"}
+
+
+def extract_hybrid_tools():
+    """Detect cross-tool patterns (Gemini CLI, Codex, etc.)."""
+    tools_found = set()
+
+    # Check CLAUDE.md for tool references
+    for md_path in [CLAUDE_DIR / "CLAUDE.md"]:
+        if md_path.exists():
+            try:
+                text = md_path.read_text(encoding="utf-8", errors="replace").lower()
+                if "gemini" in text:
+                    tools_found.add("Gemini CLI")
+                if "codex" in text:
+                    tools_found.add("OpenAI Codex")
+                if "copilot" in text:
+                    tools_found.add("GitHub Copilot")
+                if "cursor" in text:
+                    tools_found.add("Cursor")
+            except IOError:
+                pass
+
+    # Check for other AI tool directories
+    if (Path.home() / ".codex").exists():
+        tools_found.add("OpenAI Codex")
+    if (Path.home() / ".factory").exists():
+        tools_found.add("Factory")
+
+    return {"tools": sorted(tools_found)}
+
+
+def extract_blocklist_issues():
+    """Check for blocklist contradictions with enabled plugins."""
+    settings = safe_json_load(CLAUDE_DIR / "settings.json") or {}
+    blocklist = safe_json_load(PLUGINS_DIR / "blocklist.json") or {}
+    enabled = settings.get("enabledPlugins", {})
+
+    blocked_names = set()
+    if isinstance(blocklist, dict):
+        for key in blocklist:
+            if key not in ("version",):
+                blocked_names.add(key.split("@")[0] if "@" in key else key)
+    elif isinstance(blocklist, list):
+        for item in blocklist:
+            if isinstance(item, str):
+                blocked_names.add(item.split("@")[0] if "@" in item else item)
+
+    enabled_names = {k.split("@")[0] for k, v in enabled.items() if v}
+    contradictions = blocked_names & enabled_names
+
+    return {"blocked_count": len(blocked_names), "contradictions": sorted(contradictions)}
+
+
+def extract_permission_accumulation():
+    """Count permission grants per project, categorize them."""
+    projects = []
+    coding_dir = Path.home() / "Coding"
+    if not coding_dir.exists():
+        return {"projects": []}
+
+    for sf in coding_dir.rglob(".claude/settings.local.json"):
+        if len(sf.parts) > 10:
+            continue
+        data = safe_json_load(sf)
+        if not data:
+            continue
+        allows = data.get("permissions", {}).get("allow", [])
+        categories = Counter()
+        for perm in allows:
+            if isinstance(perm, str):
+                if perm.startswith("Bash("):
+                    categories["bash"] += 1
+                elif perm.startswith("Skill("):
+                    categories["skill"] += 1
+                elif perm.startswith("mcp__"):
+                    categories["mcp"] += 1
+                elif perm.startswith("Read") or perm.startswith("Write") or perm.startswith("Edit"):
+                    categories["file"] += 1
+                else:
+                    categories["other"] += 1
+        projects.append({
+            "total_grants": len(allows),
+            "categories": dict(categories),
+        })
+
+    return {
+        "projects": projects,
+        "total_projects": len(projects),
+        "avg_grants": round(sum(p["total_grants"] for p in projects) / len(projects)) if projects else 0,
+        "max_grants": max((p["total_grants"] for p in projects), default=0),
+    }
+
+
 # ── Aggregation ────────────────────────────────────────────────────────────
 
 def aggregate_session_meta(sessions):
@@ -650,6 +1058,20 @@ def generate_writeup(data):
     perms = data["permissions_profile"]
     harness_files = data["harness_files"]
     custom_agents = data["custom_agents"]
+    # New config layer data
+    safety = data.get("safety_posture", {})
+    experimental = data.get("experimental", {})
+    stats_cache = data.get("stats_cache", {})
+    instr_maturity = data.get("instruction_maturity", {})
+    memory_arch = data.get("memory_arch", {})
+    agent_det = data.get("agent_details", {})
+    team_cfg = data.get("team_configs", {})
+    mkt = data.get("marketplace", {})
+    statusline_info = data.get("statusline", {})
+    ide_info = data.get("ide", {})
+    hybrid = data.get("hybrid_tools", {})
+    blocklist_info = data.get("blocklist", {})
+    perm_accum = data.get("perm_accumulation", {})
 
     def he(s):
         return str(s).replace("&","&amp;").replace("<","&lt;").replace(">","&gt;")
@@ -964,6 +1386,20 @@ def generate_html(data):
     harness_files = data["harness_files"]
     integrity_block = json.dumps(data.get("_integrity", {}))  # pre-computed for f-string safety
     custom_agents = data["custom_agents"]
+    # New config layer data
+    safety = data.get("safety_posture", {})
+    experimental = data.get("experimental", {})
+    stats_cache = data.get("stats_cache", {})
+    instr_maturity = data.get("instruction_maturity", {})
+    memory_arch = data.get("memory_arch", {})
+    agent_det = data.get("agent_details", {})
+    team_cfg = data.get("team_configs", {})
+    mkt = data.get("marketplace", {})
+    statusline_info = data.get("statusline", {})
+    ide_info = data.get("ide", {})
+    hybrid = data.get("hybrid_tools", {})
+    blocklist_info = data.get("blocklist", {})
+    perm_accum = data.get("perm_accumulation", {})
 
     total_sessions = max(meta.get("session_count", 0), jsonl.get("sessions_with_data", 0))
     total_tokens = meta.get("total_tokens", 0)
@@ -1438,6 +1874,82 @@ f'<div class="meta" style="margin-top:0.5rem">{jsonl.get("agent_background_pct",
     </div>
 </section>
 
+<!-- Configuration & Safety Posture -->
+<section>
+    <div class="section-header"><h2>Safety &amp; Configuration</h2></div>
+    <div class="pills">
+        <span class="pill {"on" if safety.get("skip_danger_prompt") else "off"}">{safety.get("custom_safety_label", "Stock")}</span>
+        <span class="pill {"on" if safety.get("has_custom_safety") else "off"}">Custom Hooks: {", ".join(safety.get("safety_hooks", [])) or "none"}</span>
+        <span class="pill {"on" if ide_info.get("mode") == "vs-code" else "off"}">IDE: {ide_info.get("mode", "terminal-only")}</span>
+        <span class="pill {"on" if statusline_info.get("configured") else "off"}">Statusline{" (" + statusline_info.get("package_hint", "")[:40] + ")" if statusline_info.get("package_hint") else ""}</span>
+    </div>
+    {"<h3>Universal Deny Rules</h3><div class='tags'>" + "".join(f'<span class=\"tag\">{he(d)}</span>' for d in safety.get("universal_denies", [])) + "</div>" if safety.get("universal_denies") else ""}
+    {"<h3>Experimental Features</h3><div class='tags'>" + "".join(f'<span class=\"tag\">{he(k)}: {he(v)}</span>' for k, v in experimental.get("experimental_flags", {}).items()) + "</div>" if experimental.get("experimental_flags") else ""}
+    {"<h3>Other AI Tools Detected</h3><div class='tags'>" + "".join(f'<span class=\"tag\">{he(t)}</span>' for t in hybrid.get("tools", [])) + "</div>" if hybrid.get("tools") else ""}
+    {"<h3>Plugin Marketplaces (" + str(mkt.get("count", 0)) + ")</h3><div class='tags'>" + "".join(f'<span class=\"tag\">{he(m["name"])}</span>' for m in mkt.get("marketplaces", [])) + "</div>" if mkt.get("marketplaces") else ""}
+</section>
+
+<!-- Agent Model Tiering -->
+{"<section>" +
+'<div class="section-header"><h2>Agent Model Tiering</h2></div>' +
+'<div class="two-col"><div>' +
+"<h3>Opus (Judgment)</h3>" +
+("".join(f'<div class="mono" style="padding:0.15rem 0;color:var(--accent)">{he(n)}</div>' for n in agent_det.get("tiers",{}).get("opus",[])) or '<p class="empty">None</p>') +
+"</div><div>" +
+"<h3>Sonnet (Domain)</h3>" +
+("".join(f'<div class="mono" style="padding:0.15rem 0;color:var(--teal)">{he(n)}</div>' for n in agent_det.get("tiers",{}).get("sonnet",[])) or '<p class="empty">None</p>') +
+"<h3>Haiku (Utility)</h3>" +
+("".join(f'<div class="mono" style="padding:0.15rem 0;color:var(--green)">{he(n)}</div>' for n in agent_det.get("tiers",{}).get("haiku",[])) or '<p class="empty">None</p>') +
+"</div></div></section>" if any(agent_det.get("tiers",{}).get(t) for t in ("opus","sonnet","haiku")) else ""}
+
+<!-- Teams -->
+{"<section><div class='section-header'><h2>Agent Teams</h2><span class='count'>" + str(team_cfg.get("team_count",0)) + " teams</span></div>" +
+"".join(f'<div class=\"kv-row\"><span class=\"mono\">team-{t["name_hash"]}</span><span class=\"meta\">{str(t.get("member_count","?")) + " members" if t.get("has_config") else "no config"}</span></div>' for t in team_cfg.get("teams",[])) +
+"</section>" if team_cfg.get("team_count", 0) > 0 else ""}
+
+<!-- Instruction Maturity -->
+<section>
+    <div class="section-header"><h2>Instruction Maturity</h2><span class="count">{instr_maturity.get("projects",{}).get("total",0)} projects</span></div>
+    <div class="pills">
+        <span class="pill on">Gen 2 Bundle: {instr_maturity.get("projects",{}).get("gen2",0)}</span>
+        <span class="pill {"on" if instr_maturity.get("projects",{}).get("gen1",0) > 0 else "off"}">Gen 1 (CLAUDE.md only): {instr_maturity.get("projects",{}).get("gen1",0)}</span>
+        <span class="pill off">No Instructions: {instr_maturity.get("projects",{}).get("none",0)}</span>
+    </div>
+    {"<h3>Global CLAUDE.md Structure</h3><div class='tags'>" + "".join(f'<span class=\"tag\">{he(h)}</span>' for h in instr_maturity.get("global_headings",[])) + "</div>" if instr_maturity.get("global_headings") else ""}
+    {"<h3>HANDOFF.md Sizes</h3><div class='meta'>Average: " + str(instr_maturity.get("avg_handoff_lines",0)) + " lines across " + str(len(instr_maturity.get("handoff_sizes",[]))) + " projects</div>" if instr_maturity.get("handoff_sizes") else ""}
+</section>
+
+<!-- Memory Architecture -->
+<section>
+    <div class="section-header"><h2>Memory Architecture</h2></div>
+    <div class="pills">
+        <span class="pill {"on" if memory_arch.get("is_dual_layer") else "off"}">{"Dual-Layer" if memory_arch.get("is_dual_layer") else "Single-Layer"}</span>
+        <span class="pill on">In-Repo: {memory_arch.get("in_repo_memory",0)} projects</span>
+        <span class="pill on">Claude-Managed: {memory_arch.get("claude_managed_memory",0)} projects</span>
+    </div>
+    {"<h3>Memory Atoms (" + str(memory_arch.get("total_atoms",0)) + " total)</h3>" +
+    "".join(f'<div class=\"kv-row\"><span class=\"mono\">{he(t)}</span><span class=\"meta\">{c}</span></div>' for t, c in sorted(memory_arch.get("atom_types",{}).items(), key=lambda x: x[1], reverse=True)) if memory_arch.get("atom_types") else ""}
+</section>
+
+<!-- Permission Accumulation -->
+<section>
+    <div class="section-header"><h2>Permission Accumulation</h2><span class="count">{perm_accum.get("total_projects",0)} projects</span></div>
+    <div style="display:flex;gap:1.5rem;flex-wrap:wrap;margin-bottom:0.5rem">
+        <div class="meta"><strong style="color:var(--ink)">{perm_accum.get("avg_grants",0)}</strong> avg grants/project</div>
+        <div class="meta"><strong style="color:var(--ink)">{perm_accum.get("max_grants",0)}</strong> max grants</div>
+    </div>
+</section>
+
+<!-- Peak Usage -->
+{"<section><div class='section-header'><h2>Usage Intensity</h2><span class='count'>" + str(stats_cache.get("days_tracked",0)) + " days tracked</span></div>" +
+"<div style='display:flex;gap:1.5rem;flex-wrap:wrap'>" +
+"<div class='meta'><strong style='color:var(--ink)'>" + str(stats_cache.get("peak_day_messages",0)) + "</strong> peak day messages</div>" +
+"<div class='meta'><strong style='color:var(--ink)'>" + str(stats_cache.get("peak_day_sessions",0)) + "</strong> peak day sessions</div>" +
+"<div class='meta'><strong style='color:var(--ink)'>" + str(stats_cache.get("avg_daily_messages",0)) + "</strong> avg daily messages</div>" +
+"<div class='meta'><strong style='color:var(--ink)'>" + str(stats_cache.get("total_sessions_all_time",0)) + "</strong> all-time sessions</div>" +
+"<div class='meta'><strong style='color:var(--ink)'>" + str(stats_cache.get("cache_read_ratio",0)) + ":1</strong> cache-read ratio</div>" +
+"</div></section>" if stats_cache.get("peak_day_messages") else ""}
+
 <!-- end dashboard tab -->
 </div>
 
@@ -1512,6 +2024,46 @@ def main():
     else:
         print("  No /insights report found — run /insights first for narrative sections", file=sys.stderr)
 
+    # New config layer extractors
+    print("Analyzing safety posture...", file=sys.stderr)
+    safety_posture = extract_safety_posture()
+
+    print("Reading experimental features...", file=sys.stderr)
+    experimental = extract_experimental_features()
+
+    print("Reading stats cache...", file=sys.stderr)
+    stats_cache = extract_stats_cache()
+
+    print("Analyzing instruction maturity...", file=sys.stderr)
+    instruction_maturity = extract_instruction_maturity()
+
+    print("Analyzing memory architecture...", file=sys.stderr)
+    memory_arch = extract_memory_architecture()
+
+    print("Reading agent details...", file=sys.stderr)
+    agent_details = extract_agent_details()
+
+    print("Reading team configs...", file=sys.stderr)
+    team_configs = extract_team_configs()
+
+    print("Reading marketplace diversity...", file=sys.stderr)
+    marketplace = extract_marketplace_diversity()
+
+    print("Reading statusline...", file=sys.stderr)
+    statusline = extract_statusline()
+
+    print("Checking IDE integration...", file=sys.stderr)
+    ide = extract_ide_integration()
+
+    print("Detecting hybrid tools...", file=sys.stderr)
+    hybrid_tools = extract_hybrid_tools()
+
+    print("Checking blocklist...", file=sys.stderr)
+    blocklist = extract_blocklist_issues()
+
+    print("Analyzing permission accumulation...", file=sys.stderr)
+    perm_accumulation = extract_permission_accumulation()
+
     data = {
         "settings": settings,
         "installed_plugins": plugins,
@@ -1523,6 +2075,20 @@ def main():
         "jsonl_metadata": jsonl_metadata,
         "permissions_profile": permissions_profile,
         "insights_report": insights_report,
+        # New config layer
+        "safety_posture": safety_posture,
+        "experimental": experimental,
+        "stats_cache": stats_cache,
+        "instruction_maturity": instruction_maturity,
+        "memory_arch": memory_arch,
+        "agent_details": agent_details,
+        "team_configs": team_configs,
+        "marketplace": marketplace,
+        "statusline": statusline,
+        "ide": ide,
+        "hybrid_tools": hybrid_tools,
+        "blocklist": blocklist,
+        "perm_accumulation": perm_accumulation,
     }
 
     # Build integrity manifest — key stats that the server can verify
