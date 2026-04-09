@@ -44,7 +44,14 @@ def safe_json_load(path):
 
 
 def extract_safe_command_name(bash_command):
-    """Extract ONLY the program name from a bash command, safely."""
+    """Extract ONLY the program name from a bash command, safely.
+
+    For Node-style runners (npm, npx, pnpm, bun, yarn) we additionally look
+    at the second token ONLY if it matches a hardcoded allowlist of known
+    test runners. This lets us classify `npm test` as testing instead of
+    implementation. The allowlist is strict — we never return an arbitrary
+    second token.
+    """
     if not bash_command:
         return None
     for line in bash_command.strip().splitlines():
@@ -63,13 +70,41 @@ def extract_safe_command_name(bash_command):
         while remaining and ENV_ASSIGN.match(remaining[0]):
             remaining = remaining[1:]
         if remaining and not remaining[0].startswith('$') and not remaining[0].startswith('"'):
-            return remaining[0]
+            # Apply the same Node-runner allowlist after env stripping
+            first = remaining[0]
+            if first in {"npm", "npx", "pnpm", "bun", "yarn"} and len(remaining) >= 2:
+                second = remaining[1]
+                if second in _NODE_TEST_SUBCOMMANDS:
+                    return f"{first} {second}"
+            return first
         return None  # Skip — no downstream command visible
     # Absolute path — return basename only
     if token.startswith('/'):
         clean = token.replace('\\ ', ' ')
-        return os.path.basename(clean) or None
+        base = os.path.basename(clean) or None
+        token = base or token
+    # Node runner: look at second token only if it's a known test runner
+    if token in {"npm", "npx", "pnpm", "bun", "yarn"} and len(tokens) >= 2:
+        second = tokens[1]
+        if second in _NODE_TEST_SUBCOMMANDS:
+            return f"{token} {second}"
     return token
+
+
+# Strict allowlist of Node subcommands that indicate test execution.
+# ONLY these exact strings are ever returned as part of a two-token command name.
+_NODE_TEST_SUBCOMMANDS = {
+    "test",
+    "jest",
+    "vitest",
+    "mocha",
+    "ava",
+    "cypress",
+    "playwright",
+    "test:unit",
+    "test:integration",
+    "test:e2e",
+}
 
 
 # ── Static Config ──────────────────────────────────────────────────────────
@@ -311,9 +346,17 @@ def _classify_tool_phase(tool_name, cmd_name=None):
     EXPLORATION_TOOLS = {"Read", "Grep", "Glob", "WebSearch", "WebFetch", "ToolSearch"}
     IMPLEMENTATION_TOOLS = {"Edit", "Write", "NotebookEdit"}
     ORCHESTRATION_TOOLS = {"Agent", "Skill", "TaskCreate", "TaskUpdate", "EnterPlanMode"}
+    # Single-token test runners
     TEST_COMMANDS = {"pytest", "jest", "vitest", "mocha", "rspec", "test", "cargo"}
+    # Two-token Node runners, e.g. `npm test`, `npx jest`, `pnpm test:unit`
+    NODE_TEST_COMMANDS = {
+        f"{runner} {sub}"
+        for runner in ("npm", "npx", "pnpm", "bun", "yarn")
+        for sub in ("test", "jest", "vitest", "mocha", "ava", "cypress",
+                    "playwright", "test:unit", "test:integration", "test:e2e")
+    }
     SHIP_COMMANDS = {"git", "gh"}
-    IMPL_COMMANDS = {"npm", "npx", "node", "bun", "pnpm", "docker", "docker-compose"}
+    IMPL_COMMANDS = {"npm", "npx", "node", "bun", "pnpm", "yarn", "docker", "docker-compose"}
     EXPLORE_COMMANDS = {"curl", "wget"}
 
     if tool_name in EXPLORATION_TOOLS:
@@ -323,6 +366,10 @@ def _classify_tool_phase(tool_name, cmd_name=None):
     if tool_name in ORCHESTRATION_TOOLS:
         return "orchestration"
     if tool_name == "Bash" and cmd_name:
+        # Check two-token Node test commands FIRST before falling through
+        # to single-token classification
+        if cmd_name in NODE_TEST_COMMANDS:
+            return "testing"
         if cmd_name in TEST_COMMANDS:
             return "testing"
         if cmd_name in SHIP_COMMANDS:
@@ -334,8 +381,24 @@ def _classify_tool_phase(tool_name, cmd_name=None):
     return "other"
 
 
+def compute_workflow_patterns(sequences, min_length=2, max_length=4, top_n=10):
+    """Find common subsequences of length 2-4 across sessions."""
+    pattern_counts = Counter()
+    for seq in sequences:
+        for length in range(min_length, min(len(seq) + 1, max_length + 1)):
+            for i in range(len(seq) - length + 1):
+                subseq = tuple(seq[i : i + length])
+                pattern_counts[subseq] += 1
+    return [
+        {"sequence": list(p), "count": c}
+        for p, c in pattern_counts.most_common(top_n)
+        if c >= 2
+    ]
+
+
 def extract_jsonl_metadata(cutoff):
     skill_invocations = Counter()
+    session_skill_sequences = []  # list of per-session skill sequences
     slash_commands = Counter()
     hook_events = Counter()
     tool_usage = Counter()
@@ -399,6 +462,7 @@ def extract_jsonl_metadata(cutoff):
             session_had_data = False
             session_branches = set()
             session_phases_seen = []  # ordered list of phases for this session
+            session_skills_seen = []  # ordered skill invocations for this session
 
             try:
                 with open(jsonl_file, "r", errors="replace") as f:
@@ -433,6 +497,7 @@ def extract_jsonl_metadata(cutoff):
                                     if tool_name == "Skill":
                                         sn = item.get("input", {}).get("skill", "unknown")
                                         skill_invocations[sn] += 1
+                                        session_skills_seen.append(sn)
                                     elif tool_name == "Agent":
                                         agent_count += 1
                                         inp = item.get("input", {})
@@ -443,6 +508,9 @@ def extract_jsonl_metadata(cutoff):
                                             agent_models[am] += 1
                                         if inp.get("run_in_background"):
                                             agent_background += 1
+                                        # PRIVACY: do NOT read input.description — it often
+                                        # contains project names, feature details, or task
+                                        # context that would leak into the public report.
                                     elif tool_name == "Bash":
                                         # Safe command name extraction
                                         cmd_str = item.get("input", {}).get("command", "")
@@ -543,6 +611,13 @@ def extract_jsonl_metadata(cutoff):
                 session_count += 1
             if session_phases_seen:
                 session_phase_sequences.append(session_phases_seen)
+            if session_skills_seen:
+                # Deduplicate consecutive repeats (A, A, B -> A, B)
+                deduped = [session_skills_seen[0]]
+                for s in session_skills_seen[1:]:
+                    if s != deduped[-1]:
+                        deduped.append(s)
+                session_skill_sequences.append(deduped)
 
     # Phase statistics
     total_phase_calls = sum(phase_call_counts.values()) or 1
@@ -573,6 +648,7 @@ def extract_jsonl_metadata(cutoff):
 
     return {
         "skill_invocations": dict(skill_invocations.most_common(50)),
+        "workflow_patterns": compute_workflow_patterns(session_skill_sequences),
         "slash_commands": dict(slash_commands.most_common(30)),
         "hook_events": dict(hook_events.most_common(30)),
         "tool_usage": dict(tool_usage.most_common(30)),
@@ -1544,6 +1620,7 @@ def generate_html(data):
     cli_tools = jsonl.get("cli_tools", {})
     branch_prefixes = jsonl.get("branch_prefixes", {})
     tool_transitions = jsonl.get("tool_transitions", {})
+    workflow_patterns = jsonl.get("workflow_patterns", [])
     phase_transitions = jsonl.get("phase_transitions", {})
     phase_distribution = jsonl.get("phase_distribution", {})
     phase_stats = jsonl.get("phase_stats", {})
@@ -1690,12 +1767,22 @@ def generate_html(data):
         for k, v in sorted(phase_transitions.items(), key=lambda x: x[1], reverse=True)[:12]
     ) if phase_transitions else ""
 
-    tool_trans_items = "".join(
+    # Skill Workflow HTML — 2 sub-groups separated by footnote divs
+    _skill_max = max(skill_invocations.values()) if skill_invocations else 1
+    skill_inv_items = "".join(
         f'<div class="bar-row"><div class="bar-label">{he(k)}</div>'
-        f'<div class="bar-track"><div class="bar-fill" style="width:{bar_width(v, max(tool_transitions.values()) if tool_transitions else 1)};background:var(--teal)"></div></div>'
+        f'<div class="bar-track"><div class="bar-fill" style="width:{bar_width(v, _skill_max)};background:var(--accent)"></div></div>'
         f'<div class="bar-value">{v}</div></div>'
-        for k, v in sorted(tool_transitions.items(), key=lambda x: x[1], reverse=True)[:15]
-    ) if tool_transitions else ""
+        for k, v in sorted(skill_invocations.items(), key=lambda x: x[1], reverse=True)[:20]
+    ) if skill_invocations else ""
+
+    _pattern_max = max((p["count"] for p in workflow_patterns), default=1)
+    workflow_pat_items = "".join(
+        f'<div class="bar-row"><div class="bar-label">{he(" → ".join(p["sequence"]))}</div>'
+        f'<div class="bar-track"><div class="bar-fill" style="width:{bar_width(p["count"], _pattern_max)};background:var(--teal)"></div></div>'
+        f'<div class="bar-value">{p["count"]}</div></div>'
+        for p in workflow_patterns[:10]
+    ) if workflow_patterns else ""
 
     # Custom agent list
     agent_list = "".join(f'<span class="tag">{he(a["name"])}</span>' for a in custom_agents)
@@ -1795,6 +1882,8 @@ td.r {{ text-align:right; }}
 .tag {{ font-family:var(--mono); font-size:0.75rem; color:var(--ink-light); background:var(--bg-alt); border:1px solid var(--border-light); padding:0.2rem 0.6rem; border-radius:4px; display:inline-block; margin:0.15rem; }}
 .tags {{ display:flex; flex-wrap:wrap; gap:0.35rem; }}
 .empty {{ font-size:0.82rem; color:var(--ink-muted); font-style:italic; }}
+.footnote {{ font-size:0.7rem; font-weight:600; text-transform:uppercase; letter-spacing:0.06em; color:var(--ink-muted); margin:1rem 0 0.4rem; padding-bottom:0.25rem; border-bottom:1px solid var(--border-light); }}
+.footnote:first-child {{ margin-top:0; }}
 .pills {{ display:flex; flex-wrap:wrap; gap:0.4rem; margin:1rem 0 1.5rem; }}
 .pill {{ font-size:0.72rem; font-weight:600; padding:0.3rem 0.7rem; border-radius:20px; letter-spacing:0.03em; border:1px solid transparent; }}
 .pill.on {{ background:var(--green-light); color:var(--green); border-color:rgba(45,106,79,0.2); }}
@@ -1986,13 +2075,16 @@ f'<div class="meta" style="margin-top:0.5rem">{jsonl.get("agent_background_pct",
   </div>
 </section>
 
-<!-- Tool Transitions -->
+<!-- Skill Workflow -->
 <section>
   <div class="section-header">
-    <h2>Tool Transitions</h2>
-    <span class="count">{sum(tool_transitions.values())} transitions</span>
+    <h2>Skill Workflow</h2>
+    <span class="count">{sum(skill_invocations.values())} skill invocations</span>
   </div>
-  {tool_trans_items or '<p class="empty">No data</p>'}
+  <div class="footnote">Skill invocations</div>
+  {skill_inv_items or '<p class="empty">No skill invocations</p>'}
+  <div class="footnote">Common workflow patterns</div>
+  {workflow_pat_items or '<p class="empty">No repeating patterns detected</p>'}
 </section>
 
 <!-- TIER 3: Context & Background -->
