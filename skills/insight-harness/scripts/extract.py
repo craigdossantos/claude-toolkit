@@ -16,6 +16,7 @@ import json
 import os
 import re
 import sys
+import urllib.request
 from datetime import datetime, timedelta, timezone
 from collections import Counter, defaultdict
 from pathlib import Path
@@ -30,6 +31,7 @@ HOOKS_DIR = CLAUDE_DIR / "hooks"
 AGENTS_DIR = CLAUDE_DIR / "agents"
 
 DAYS = 30
+VERSION = "2.1.0"  # Keep in sync with SKILL.md frontmatter
 ENV_ASSIGN = re.compile(r'^([A-Z_][A-Z0-9_]*)=')
 
 
@@ -289,6 +291,49 @@ def extract_session_meta(cutoff):
 
 # ── JSONL Scan ─────────────────────────────────────────────────────────────
 
+def _classify_tool_phase(tool_name, cmd_name=None):
+    """Classify a tool call into a workflow phase.
+
+    PRIVACY: Only read tool_use.name — never read tool_use.input
+    except for Bash commands (first token only via extract_safe_command_name)
+
+    Phases:
+    - exploration: Read, Grep, Glob, WebSearch, WebFetch, curl, wget
+    - implementation: Edit, Write, NotebookEdit, npm/npx/node/bun/pnpm/docker (non-test)
+    - testing: Bash with test commands (pytest, jest, vitest, etc.) or npm test/npx jest etc.
+    - shipping: Bash with git/gh commands
+    - orchestration: Agent, Skill, TaskCreate, TaskUpdate
+    - other: everything else (Bash with non-classified commands, etc.)
+
+    Note: if "other" phase exceeds 30% of total calls, consider filtering
+    it from the diagram to reduce noise.
+    """
+    EXPLORATION_TOOLS = {"Read", "Grep", "Glob", "WebSearch", "WebFetch", "ToolSearch"}
+    IMPLEMENTATION_TOOLS = {"Edit", "Write", "NotebookEdit"}
+    ORCHESTRATION_TOOLS = {"Agent", "Skill", "TaskCreate", "TaskUpdate", "EnterPlanMode"}
+    TEST_COMMANDS = {"pytest", "jest", "vitest", "mocha", "rspec", "test", "cargo"}
+    SHIP_COMMANDS = {"git", "gh"}
+    IMPL_COMMANDS = {"npm", "npx", "node", "bun", "pnpm", "docker", "docker-compose"}
+    EXPLORE_COMMANDS = {"curl", "wget"}
+
+    if tool_name in EXPLORATION_TOOLS:
+        return "exploration"
+    if tool_name in IMPLEMENTATION_TOOLS:
+        return "implementation"
+    if tool_name in ORCHESTRATION_TOOLS:
+        return "orchestration"
+    if tool_name == "Bash" and cmd_name:
+        if cmd_name in TEST_COMMANDS:
+            return "testing"
+        if cmd_name in SHIP_COMMANDS:
+            return "shipping"
+        if cmd_name in EXPLORE_COMMANDS:
+            return "exploration"
+        if cmd_name in IMPL_COMMANDS:
+            return "implementation"
+    return "other"
+
+
 def extract_jsonl_metadata(cutoff):
     skill_invocations = Counter()
     slash_commands = Counter()
@@ -325,6 +370,18 @@ def extract_jsonl_metadata(cutoff):
     # Git
     branch_prefixes = Counter()
 
+    # Tool transition tracking (tool A -> tool B within a turn)
+    tool_transitions = Counter()
+    prev_tool_in_turn = None  # reset on user message boundaries
+
+    # Phase transition tracking
+    phase_transitions = Counter()  # "exploration->implementation": 23
+    prev_phase_in_turn = None
+    phase_call_counts = Counter()  # total tool calls per phase
+
+    # Per-session phase sequences for aggregate stats
+    session_phase_sequences = []  # list of per-session phase lists
+
     cmd_pattern = re.compile(r"<command-name>(.*?)</command-name>")
 
     for project_dir in PROJECTS_DIR.iterdir():
@@ -341,6 +398,7 @@ def extract_jsonl_metadata(cutoff):
             total_sessions_scanned += 1
             session_had_data = False
             session_branches = set()
+            session_phases_seen = []  # ordered list of phases for this session
 
             try:
                 with open(jsonl_file, "r", errors="replace") as f:
@@ -398,6 +456,33 @@ def extract_jsonl_metadata(cutoff):
                                     elif tool_name == "EnterPlanMode":
                                         plan_mode_enters += 1
 
+                                    # PRIVACY: Only read tool_use.name — never read tool_use.input
+                                    # except for Bash commands (first token only via extract_safe_command_name)
+
+                                    # Tool transition tracking
+                                    if prev_tool_in_turn is not None:
+                                        transition_key = f"{prev_tool_in_turn}->{tool_name}"
+                                        tool_transitions[transition_key] += 1
+                                    prev_tool_in_turn = tool_name
+
+                                    # Phase classification
+                                    _cmd_name_for_phase = None
+                                    if tool_name == "Bash":
+                                        _cmd_name_for_phase = extract_safe_command_name(
+                                            item.get("input", {}).get("command", "")
+                                        )
+                                    current_phase = _classify_tool_phase(tool_name, _cmd_name_for_phase)
+                                    phase_call_counts[current_phase] += 1
+
+                                    # Phase transitions (within a turn)
+                                    if prev_phase_in_turn is not None and prev_phase_in_turn != current_phase:
+                                        phase_transitions[f"{prev_phase_in_turn}->{current_phase}"] += 1
+                                    prev_phase_in_turn = current_phase
+
+                                    # Record phase for session-level sequence
+                                    if not session_phases_seen or session_phases_seen[-1] != current_phase:
+                                        session_phases_seen.append(current_phase)
+
                                     if tool_name.startswith("mcp__"):
                                         parts = tool_name.split("__")
                                         if len(parts) >= 2:
@@ -405,6 +490,9 @@ def extract_jsonl_metadata(cutoff):
 
                         elif entry_type == "user":
                             user_messages += 1
+                            # Reset tool transition tracking on new user turn
+                            prev_tool_in_turn = None
+                            prev_phase_in_turn = None
                             msg = d.get("message", {})
                             content = msg.get("content", "")
                             if isinstance(content, str):
@@ -453,6 +541,27 @@ def extract_jsonl_metadata(cutoff):
 
             if session_had_data:
                 session_count += 1
+            if session_phases_seen:
+                session_phase_sequences.append(session_phases_seen)
+
+    # Phase statistics
+    total_phase_calls = sum(phase_call_counts.values()) or 1
+    phase_pcts = {k: round(v / total_phase_calls * 100) for k, v in phase_call_counts.most_common()}
+
+    # Session-level phase pattern stats
+    sessions_that_test_before_ship = 0
+    sessions_that_explore_before_implement = 0
+    for seq in session_phase_sequences:
+        if "testing" in seq and "shipping" in seq:
+            if seq.index("testing") < seq.index("shipping"):
+                sessions_that_test_before_ship += 1
+        if "exploration" in seq and "implementation" in seq:
+            if seq.index("exploration") < seq.index("implementation"):
+                sessions_that_explore_before_implement += 1
+
+    total_with_phases = len(session_phase_sequences) or 1
+    test_before_ship_pct = round(sessions_that_test_before_ship / total_with_phases * 100)
+    explore_before_impl_pct = round(sessions_that_explore_before_implement / total_with_phases * 100)
 
     # Autonomy metrics
     autonomy_ratio = round(user_messages / assistant_messages, 3) if assistant_messages > 0 else 0
@@ -500,6 +609,18 @@ def extract_jsonl_metadata(cutoff):
         "plan_mode_enters": plan_mode_enters,
         # Git
         "branch_prefixes": dict(branch_prefixes.most_common(10)),
+        # Tool transitions (top 30 most common A->B pairs)
+        "tool_transitions": dict(tool_transitions.most_common(30)),
+        # Phase transitions (top 20 most common phase->phase pairs)
+        "phase_transitions": dict(phase_transitions.most_common(20)),
+        # Phase call distribution (percentage per phase)
+        "phase_distribution": phase_pcts,
+        # Phase pattern stats
+        "phase_stats": {
+            "test_before_ship_pct": test_before_ship_pct,
+            "explore_before_impl_pct": explore_before_impl_pct,
+            "total_sessions_with_phases": len(session_phase_sequences),
+        },
     }
 
 
@@ -1422,6 +1543,10 @@ def generate_html(data):
     enabled_plugins = settings.get("enabled_plugins", {})
     cli_tools = jsonl.get("cli_tools", {})
     branch_prefixes = jsonl.get("branch_prefixes", {})
+    tool_transitions = jsonl.get("tool_transitions", {})
+    phase_transitions = jsonl.get("phase_transitions", {})
+    phase_distribution = jsonl.get("phase_distribution", {})
+    phase_stats = jsonl.get("phase_stats", {})
 
     # File operation ratios
     reads = tool_counts.get("Read", 0)
@@ -1551,6 +1676,26 @@ def generate_html(data):
     branch_items = "".join(
         f'<span class="tag">{he(p)}/ ({c})</span>' for p, c in sorted(branch_prefixes.items(), key=lambda x: x[1], reverse=True)[:6]
     )
+
+    # Workflow Phases HTML
+    phase_dist_items = "".join(
+        f'<div class="kv-row"><span class="mono">{he(phase)}</span><span class="meta">{pct_val}%</span></div>'
+        for phase, pct_val in sorted(phase_distribution.items(), key=lambda x: x[1], reverse=True)
+    ) if phase_distribution else ""
+
+    phase_trans_items = "".join(
+        f'<div class="bar-row"><div class="bar-label">{he(k)}</div>'
+        f'<div class="bar-track"><div class="bar-fill" style="width:{bar_width(v, max(phase_transitions.values()) if phase_transitions else 1)};background:var(--purple)"></div></div>'
+        f'<div class="bar-value">{v}</div></div>'
+        for k, v in sorted(phase_transitions.items(), key=lambda x: x[1], reverse=True)[:12]
+    ) if phase_transitions else ""
+
+    tool_trans_items = "".join(
+        f'<div class="bar-row"><div class="bar-label">{he(k)}</div>'
+        f'<div class="bar-track"><div class="bar-fill" style="width:{bar_width(v, max(tool_transitions.values()) if tool_transitions else 1)};background:var(--teal)"></div></div>'
+        f'<div class="bar-value">{v}</div></div>'
+        for k, v in sorted(tool_transitions.items(), key=lambda x: x[1], reverse=True)[:15]
+    ) if tool_transitions else ""
 
     # Custom agent list
     agent_list = "".join(f'<span class="tag">{he(a["name"])}</span>' for a in custom_agents)
@@ -1813,6 +1958,43 @@ f'<div class="meta" style="margin-top:0.5rem">{jsonl.get("agent_background_pct",
     {make_bar_chart(cli_tools, "var(--teal)", 15)}
 </section>
 
+<!-- Workflow Phases -->
+<section>
+  <div class="section-header">
+    <h2>Workflow Phases</h2>
+    <span class="count">{phase_stats.get("total_sessions_with_phases", 0)} sessions analyzed</span>
+  </div>
+  <div class="two-col">
+    <div>
+      <h3>Phase Distribution</h3>
+      {phase_dist_items or '<p class="empty">No data</p>'}
+    </div>
+    <div>
+      <h3>Phase Transitions</h3>
+      {phase_trans_items or '<p class="empty">No data</p>'}
+    </div>
+  </div>
+  <div style="display:flex;gap:1.5rem;flex-wrap:wrap;margin-top:1rem">
+    <div class="meta">
+      <strong style="color:var(--ink)">{phase_stats.get("explore_before_impl_pct", 0)}%</strong>
+      explore before implementing
+    </div>
+    <div class="meta">
+      <strong style="color:var(--ink)">{phase_stats.get("test_before_ship_pct", 0)}%</strong>
+      test before shipping
+    </div>
+  </div>
+</section>
+
+<!-- Tool Transitions -->
+<section>
+  <div class="section-header">
+    <h2>Tool Transitions</h2>
+    <span class="count">{sum(tool_transitions.values())} transitions</span>
+  </div>
+  {tool_trans_items or '<p class="empty">No data</p>'}
+</section>
+
 <!-- TIER 3: Context & Background -->
 
 <!-- Tool Usage -->
@@ -1984,9 +2166,55 @@ function switchTab(tab) {{
     return html
 
 
+# ── Version Check & Self-Update ───────────────────────────────────────────
+
+def check_for_updates():
+    """Check GitHub for newer version. Never blocks or crashes."""
+    try:
+        url = "https://raw.githubusercontent.com/craigdossantos/claude-toolkit/main/skills/insight-harness/SKILL.md"
+        req = urllib.request.Request(url, headers={"User-Agent": "insight-harness"})
+        with urllib.request.urlopen(req, timeout=3) as resp:
+            content = resp.read().decode("utf-8", errors="ignore")
+        match = re.search(r"^version:\s*(.+)$", content, re.MULTILINE)
+        if match:
+            remote = match.group(1).strip()
+            if remote != VERSION:
+                print(f"\n⚡ Insight Harness update available: v{VERSION} → v{remote}", file=sys.stderr)
+                print("  Run: python3 ~/.claude/skills/insight-harness/scripts/extract.py --update", file=sys.stderr)
+    except Exception:
+        pass  # Network issues, parse errors — silently continue
+
+
+def self_update():
+    """Download and install the latest version from GitHub."""
+    import subprocess
+    print("Updating Insight Harness skill...")
+    result = subprocess.run([
+        "bash", "-c",
+        "curl -sL https://github.com/craigdossantos/claude-toolkit/archive/main.tar.gz | tar xz -C /tmp && cp -r /tmp/claude-toolkit-main/skills/insight-harness ~/.claude/skills/ && rm -rf /tmp/claude-toolkit-main"
+    ])
+    if result.returncode == 0:
+        # Read new version
+        skill_md = Path.home() / ".claude" / "skills" / "insight-harness" / "SKILL.md"
+        if skill_md.exists():
+            content = skill_md.read_text()
+            match = re.search(r"^version:\s*(.+)$", content, re.MULTILINE)
+            if match:
+                print(f"✓ Updated to v{match.group(1).strip()}")
+                return
+        print("✓ Updated successfully")
+    else:
+        print("✗ Update failed", file=sys.stderr)
+        sys.exit(1)
+
+
 # ── Main ───────────────────────────────────────────────────────────────────
 
 def main():
+    if len(sys.argv) > 1 and sys.argv[1] == "--update":
+        self_update()
+        sys.exit(0)
+
     cutoff = datetime.now(timezone.utc) - timedelta(days=DAYS)
 
     print("Extracting settings...", file=sys.stderr)
@@ -2138,6 +2366,9 @@ def main():
         dated_path.write_text(html)
 
     print(str(primary_path))
+
+    # Check for updates (non-blocking, silent on failure)
+    check_for_updates()
 
 
 if __name__ == "__main__":
