@@ -44,7 +44,14 @@ def safe_json_load(path):
 
 
 def extract_safe_command_name(bash_command):
-    """Extract ONLY the program name from a bash command, safely."""
+    """Extract ONLY the program name from a bash command, safely.
+
+    For Node-style runners (npm, npx, pnpm, bun, yarn) we additionally look
+    at the second token ONLY if it matches a hardcoded allowlist of known
+    test runners. This lets us classify `npm test` as testing instead of
+    implementation. The allowlist is strict — we never return an arbitrary
+    second token.
+    """
     if not bash_command:
         return None
     for line in bash_command.strip().splitlines():
@@ -63,13 +70,41 @@ def extract_safe_command_name(bash_command):
         while remaining and ENV_ASSIGN.match(remaining[0]):
             remaining = remaining[1:]
         if remaining and not remaining[0].startswith('$') and not remaining[0].startswith('"'):
-            return remaining[0]
+            # Apply the same Node-runner allowlist after env stripping
+            first = remaining[0]
+            if first in {"npm", "npx", "pnpm", "bun", "yarn"} and len(remaining) >= 2:
+                second = remaining[1]
+                if second in _NODE_TEST_SUBCOMMANDS:
+                    return f"{first} {second}"
+            return first
         return None  # Skip — no downstream command visible
     # Absolute path — return basename only
     if token.startswith('/'):
         clean = token.replace('\\ ', ' ')
-        return os.path.basename(clean) or None
+        base = os.path.basename(clean) or None
+        token = base or token
+    # Node runner: look at second token only if it's a known test runner
+    if token in {"npm", "npx", "pnpm", "bun", "yarn"} and len(tokens) >= 2:
+        second = tokens[1]
+        if second in _NODE_TEST_SUBCOMMANDS:
+            return f"{token} {second}"
     return token
+
+
+# Strict allowlist of Node subcommands that indicate test execution.
+# ONLY these exact strings are ever returned as part of a two-token command name.
+_NODE_TEST_SUBCOMMANDS = {
+    "test",
+    "jest",
+    "vitest",
+    "mocha",
+    "ava",
+    "cypress",
+    "playwright",
+    "test:unit",
+    "test:integration",
+    "test:e2e",
+}
 
 
 # ── Static Config ──────────────────────────────────────────────────────────
@@ -311,9 +346,17 @@ def _classify_tool_phase(tool_name, cmd_name=None):
     EXPLORATION_TOOLS = {"Read", "Grep", "Glob", "WebSearch", "WebFetch", "ToolSearch"}
     IMPLEMENTATION_TOOLS = {"Edit", "Write", "NotebookEdit"}
     ORCHESTRATION_TOOLS = {"Agent", "Skill", "TaskCreate", "TaskUpdate", "EnterPlanMode"}
+    # Single-token test runners
     TEST_COMMANDS = {"pytest", "jest", "vitest", "mocha", "rspec", "test", "cargo"}
+    # Two-token Node runners, e.g. `npm test`, `npx jest`, `pnpm test:unit`
+    NODE_TEST_COMMANDS = {
+        f"{runner} {sub}"
+        for runner in ("npm", "npx", "pnpm", "bun", "yarn")
+        for sub in ("test", "jest", "vitest", "mocha", "ava", "cypress",
+                    "playwright", "test:unit", "test:integration", "test:e2e")
+    }
     SHIP_COMMANDS = {"git", "gh"}
-    IMPL_COMMANDS = {"npm", "npx", "node", "bun", "pnpm", "docker", "docker-compose"}
+    IMPL_COMMANDS = {"npm", "npx", "node", "bun", "pnpm", "yarn", "docker", "docker-compose"}
     EXPLORE_COMMANDS = {"curl", "wget"}
 
     if tool_name in EXPLORATION_TOOLS:
@@ -323,6 +366,10 @@ def _classify_tool_phase(tool_name, cmd_name=None):
     if tool_name in ORCHESTRATION_TOOLS:
         return "orchestration"
     if tool_name == "Bash" and cmd_name:
+        # Check two-token Node test commands FIRST before falling through
+        # to single-token classification
+        if cmd_name in NODE_TEST_COMMANDS:
+            return "testing"
         if cmd_name in TEST_COMMANDS:
             return "testing"
         if cmd_name in SHIP_COMMANDS:
@@ -351,7 +398,6 @@ def compute_workflow_patterns(sequences, min_length=2, max_length=4, top_n=10):
 
 def extract_jsonl_metadata(cutoff):
     skill_invocations = Counter()
-    agent_dispatches = Counter()
     session_skill_sequences = []  # list of per-session skill sequences
     slash_commands = Counter()
     hook_events = Counter()
@@ -462,10 +508,9 @@ def extract_jsonl_metadata(cutoff):
                                             agent_models[am] += 1
                                         if inp.get("run_in_background"):
                                             agent_background += 1
-                                        # Dispatch description (short label, safe to read)
-                                        desc = inp.get("description", "")
-                                        if isinstance(desc, str) and desc:
-                                            agent_dispatches[desc[:60]] += 1
+                                        # PRIVACY: do NOT read input.description — it often
+                                        # contains project names, feature details, or task
+                                        # context that would leak into the public report.
                                     elif tool_name == "Bash":
                                         # Safe command name extraction
                                         cmd_str = item.get("input", {}).get("command", "")
@@ -603,7 +648,6 @@ def extract_jsonl_metadata(cutoff):
 
     return {
         "skill_invocations": dict(skill_invocations.most_common(50)),
-        "agent_dispatches": dict(agent_dispatches.most_common(15)),
         "workflow_patterns": compute_workflow_patterns(session_skill_sequences),
         "slash_commands": dict(slash_commands.most_common(30)),
         "hook_events": dict(hook_events.most_common(30)),
@@ -1576,7 +1620,6 @@ def generate_html(data):
     cli_tools = jsonl.get("cli_tools", {})
     branch_prefixes = jsonl.get("branch_prefixes", {})
     tool_transitions = jsonl.get("tool_transitions", {})
-    agent_dispatches = jsonl.get("agent_dispatches", {})
     workflow_patterns = jsonl.get("workflow_patterns", [])
     phase_transitions = jsonl.get("phase_transitions", {})
     phase_distribution = jsonl.get("phase_distribution", {})
@@ -1724,14 +1767,7 @@ def generate_html(data):
         for k, v in sorted(phase_transitions.items(), key=lambda x: x[1], reverse=True)[:12]
     ) if phase_transitions else ""
 
-    tool_trans_items = "".join(
-        f'<div class="bar-row"><div class="bar-label">{he(k)}</div>'
-        f'<div class="bar-track"><div class="bar-fill" style="width:{bar_width(v, max(tool_transitions.values()) if tool_transitions else 1)};background:var(--teal)"></div></div>'
-        f'<div class="bar-value">{v}</div></div>'
-        for k, v in sorted(tool_transitions.items(), key=lambda x: x[1], reverse=True)[:15]
-    ) if tool_transitions else ""
-
-    # Skill Workflow HTML — 3 sub-groups separated by footnote divs
+    # Skill Workflow HTML — 2 sub-groups separated by footnote divs
     _skill_max = max(skill_invocations.values()) if skill_invocations else 1
     skill_inv_items = "".join(
         f'<div class="bar-row"><div class="bar-label">{he(k)}</div>'
@@ -1739,14 +1775,6 @@ def generate_html(data):
         f'<div class="bar-value">{v}</div></div>'
         for k, v in sorted(skill_invocations.items(), key=lambda x: x[1], reverse=True)[:20]
     ) if skill_invocations else ""
-
-    _agent_max = max(agent_dispatches.values()) if agent_dispatches else 1
-    agent_disp_items = "".join(
-        f'<div class="bar-row"><div class="bar-label">{he(k)}</div>'
-        f'<div class="bar-track"><div class="bar-fill" style="width:{bar_width(v, _agent_max)};background:var(--purple)"></div></div>'
-        f'<div class="bar-value">{v}</div></div>'
-        for k, v in sorted(agent_dispatches.items(), key=lambda x: x[1], reverse=True)[:10]
-    ) if agent_dispatches else ""
 
     _pattern_max = max((p["count"] for p in workflow_patterns), default=1)
     workflow_pat_items = "".join(
@@ -2055,8 +2083,6 @@ f'<div class="meta" style="margin-top:0.5rem">{jsonl.get("agent_background_pct",
   </div>
   <div class="footnote">Skill invocations</div>
   {skill_inv_items or '<p class="empty">No skill invocations</p>'}
-  <div class="footnote">Agent dispatches</div>
-  {agent_disp_items or '<p class="empty">No agent dispatches</p>'}
   <div class="footnote">Common workflow patterns</div>
   {workflow_pat_items or '<p class="empty">No repeating patterns detected</p>'}
 </section>
