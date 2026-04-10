@@ -1,38 +1,52 @@
 # Claude Toolkit
 
-Reusable skills, agents, commands, hooks, and settings for Claude Code.
+A collection of reusable skills, agents, commands, hooks, and settings for [Claude Code](https://claude.com/claude-code).
 
-## Quick Install
+Everything here is designed to be copied into your own `~/.claude/` or project `./.claude/` directory so Claude Code can use it.
+
+---
+
+## What is a skill?
+
+If you're new to Claude Code, here's the one-minute version.
+
+A **skill** is a folder with a `SKILL.md` file inside it. That file contains instructions written _for Claude_ — not for you. When Claude Code is running and detects that your request matches a skill (either by name, trigger phrase, or topic), it loads that skill's instructions into context and follows them.
+
+Skills live in one of two places:
+
+- `~/.claude/skills/<name>/` — **global**, available in every project
+- `<your-project>/.claude/skills/<name>/` — **per-project**, only available when Claude is working in that directory
+
+You don't _run_ a skill the way you run a script. You either:
+
+1. **Describe what you want in plain English** — _"mock up a new pricing page"_ — and Claude auto-invokes the matching skill, or
+2. **Name the skill explicitly** — _"use the ux-mockup skill to..."_ — when you want to force a specific one, or
+3. **Use a slash command** — some skills expose themselves as `/skill-name` (e.g. `/handoff`, `/insight-harness`). Type `/` in Claude Code to see what's available.
+
+After installing a skill, verify it's there by running `ls ~/.claude/skills` (for global) or `ls .claude/skills` (for project-local). Claude Code also loads skills at session start, so restart your conversation if you just installed one.
+
+---
+
+## Quick install
+
+Clone the repo and use the installer:
 
 ```bash
-# Clone the repo
 git clone https://github.com/craigdossantos/claude-toolkit.git
 cd claude-toolkit
 
-# Interactive install
-./install.sh
-
-# Or install everything to current project
-./install.sh --all
-
-# Or install globally (available in all projects)
-./install.sh --global --all
+./install.sh                                   # interactive menu
+./install.sh --all                             # install everything into ./.claude
+./install.sh --global --all                    # install everything into ~/.claude
+./install.sh --skills ux-mockup qa-checklist   # install specific skills only
+./install.sh --list                            # see what's available
 ```
 
-## Available Components
+The installer **copies files** into your target directory — it doesn't symlink, doesn't download anything else, and doesn't touch files outside the target. Read it before running if you want: [`install.sh`](./install.sh). To uninstall, delete the skill's directory under `.claude/skills/`.
 
-### Skills
+### One-line install for insight-harness only
 
-| Skill             | Description                                                                                                                                                               |
-| ----------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `insight-harness` | A superset of `/insights` — generates a comprehensive profile with token usage, tool breakdowns, skill inventory, hooks, and more. Upload to insightharness.com to share. |
-| `init`            | Bootstrap new projects with frontend design and skill creation capabilities                                                                                               |
-| `testing-webapps` | Test web apps with Claude for Chrome (visual/interactive) or Playwright (automated/CI)                                                                                    |
-| `frontend-design` | Create distinctive, production-grade frontend interfaces that avoid generic AI aesthetics                                                                                 |
-
-### Quick Install: Insight Harness
-
-A superset of `/insights` — everything you get from `/insights` plus token usage, tool breakdowns, skill inventory, hooks, and more. Upload to [insightharness.com](https://insightharness.com) to share your profile:
+If you just want to try [`insight-harness`](./skills/insight-harness/README.md) without cloning:
 
 ```bash
 mkdir -p ~/.claude/skills/insight-harness/scripts && \
@@ -43,122 +57,109 @@ curl -sL https://raw.githubusercontent.com/craigdossantos/claude-toolkit/main/sk
 open "$(python3 ~/.claude/skills/insight-harness/scripts/extract.py)"
 ```
 
-This installs the skill and immediately generates your report. The report saves to `~/.claude/usage-data/insight-harness.html` (alongside the `/insights` report). After installing, you can also run it anytime in Claude Code with `/insight-harness`.
+---
 
-### Agents
+## Skills
 
-_Coming soon_
+Each skill has its own README with screenshots, usage examples, and an install command. Start with any of these:
 
-### Commands
+### Design & UX
 
-_Coming soon_
+| Skill                                                   | What it does                                                                                                                                                               |
+| ------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| [`ux-mockup`](./skills/ux-mockup/README.md)             | Generate self-contained HTML mockups with per-section feedback textareas, version history, and mobile/desktop toggle. For iterating with stakeholders who don't use Figma. |
+| [`frontend-design`](./skills/frontend-design/README.md) | Create distinctive, production-grade frontend interfaces that avoid generic AI aesthetics. For when you actually want the design to look like someone chose it.            |
 
-### Hooks
+### Testing & QA
 
-_Coming soon_
+| Skill                                                   | What it does                                                                                                                         |
+| ------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------ |
+| [`qa-checklist`](./skills/qa-checklist/README.md)       | Generate an interactive manual-QA checklist as an HTML page after creating a PR. Pass/fail/skip buttons, feedback, clipboard export. |
+| [`testing-webapps`](./skills/testing-webapps/README.md) | Router skill that picks the right tool for each testing scenario — Claude for Chrome (interactive) or Playwright (automated).        |
 
-## Usage
+### Multi-agent thinking
 
-### Install Specific Components
+| Skill                                                                 | What it does                                                                                                                                                          |
+| --------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| [`consensus-brainstormer`](./skills/consensus-brainstormer/README.md) | Spawn 10 parallel agents with distinct cognitive framings (contrarian, pragmatist, risk analyst, etc.) and synthesize convergent recommendations + creative outliers. |
+| [`debate-chamber`](./skills/debate-chamber/README.md)                 | 5 agents debate across 3 sequential rounds, seeing each other's responses. For when ideas need to collide and sharpen, not just be collected.                         |
+| [`research-orchestrator`](./skills/research-orchestrator/README.md)   | Fan-out/fan-in research with 5 parallel Sonnet agents on 5 axes, synthesized by an Opus agent.                                                                        |
 
-```bash
-# Install specific skills
-./install.sh --skills testing-webapps frontend-design
+### Planning & documents
 
-# Install all skills
-./install.sh --skills
+| Skill                                   | What it does                                                                                                                             |
+| --------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------- |
+| [`prd`](./skills/prd/README.md)         | Generate a Product Requirements Document through clarifying questions. Output is a clean markdown PRD ready for implementation.          |
+| [`handoff`](./skills/handoff/README.md) | End-of-session ritual that writes `HANDOFF.md` and appends to `MEMORY.md`, in a background sub-agent so it doesn't pollute main context. |
+| [`ralph`](./skills/ralph/README.md)     | Convert an existing PRD into the `prd.json` format used by the Ralph autonomous agent system.                                            |
 
-# Install to global ~/.claude
-./install.sh --global --skills testing-webapps
-```
+### Reporting & setup
 
-### List Available Components
+| Skill                                                       | What it does                                                                                                                                                          |
+| ----------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| [`html-report`](./skills/html-report/README.md)             | Convert research or analysis content into a polished NYTimes-editorial-style HTML page.                                                                               |
+| [`video-course-site`](./skills/video-course-site/README.md) | Turn a folder of video files into a tabbed static site: transcribe locally with whisper.cpp → blog posts in the teacher's voice → single-page site.                   |
+| [`insight-harness`](./skills/insight-harness/README.md)     | Superset of `/insights` — generates a comprehensive profile of your Claude Code harness (token usage, tool breakdowns, skill inventory, hooks) over the last 30 days. |
+| [`init`](./skills/init/README.md)                           | Bootstrap a new project with frontend-design and skill-creation capabilities turned on.                                                                               |
 
-```bash
-./install.sh --list
-```
+### Meta / infrastructure
 
-### Full Options
+| Skill                                                 | What it does                                                                                                                                                                                                |
+| ----------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| [`skill-showcase`](./skills/skill-showcase/README.md) | Build a single-file public HTML showcase of a collection of skills — table of contents, category grouping, custom-vs-plugin badges, and PII scrubbing. For publishing skills without leaking personal info. |
 
-```
-./install.sh                    Interactive menu
-./install.sh --list             List available components
-./install.sh --all              Install everything
-./install.sh --global           Install to ~/.claude (global)
-./install.sh --skills           Install all skills
-./install.sh --skills NAME...   Install specific skills
-./install.sh --agents           Install all agents
-./install.sh --commands         Install all commands
-./install.sh --hooks            Install all hooks
-```
+### Agents, commands, hooks
 
-## Directory Structure
+_Coming soon._
+
+---
+
+## Directory structure
 
 ```
 claude-toolkit/
 ├── install.sh          # Installer script
-├── README.md
-├── skills/             # Claude Code skills
-│   ├── init/
-│   │   └── SKILL.md
-│   ├── testing-webapps/
-│   │   ├── SKILL.md
-│   │   ├── playwright-patterns.md
-│   │   ├── ci-cd-integration.md
-│   │   ├── test_template.py
-│   │   └── with_server.py
-│   └── frontend-design/
-│       └── SKILL.md
+├── README.md           # You are here
+├── skills/             # Claude Code skills (each with SKILL.md + README.md)
 ├── agents/             # Subagent definitions
 ├── commands/           # Slash commands
 ├── hooks/              # Pre/post tool hooks
 ├── settings/           # Settings presets
+├── statusline/         # Custom statusline scripts
 └── plugins/            # Full plugin bundles
 ```
 
-## Adding Your Own Components
+Each skill folder contains:
 
-### Skills
+- **`SKILL.md`** — the instructions Claude reads when the skill is invoked. Written for Claude, not for humans.
+- **`README.md`** — the human-facing docs (what you're reading now is the repo-level one). Every skill has its own.
+- **`assets/`** — screenshots, template HTML, or other static files the skill references.
+- **`scripts/`** — helper scripts for skills that shell out (e.g. `video-course-site`, `insight-harness`).
 
-Create a directory in `skills/` with a `SKILL.md`:
-
-```markdown
----
-name: my-skill-name
-description: "What it does. When to use it."
 ---
 
-# My Skill
+## Adding your own skill
 
-Instructions for Claude...
-```
+1. Create a directory under `skills/` with a `SKILL.md` using YAML frontmatter:
 
-### Commands
+   ```markdown
+   ---
+   name: my-skill
+   description: "What it does. When Claude should invoke it. Include trigger phrases."
+   ---
 
-Create a `.md` file in `commands/`:
+   # My Skill
 
-```markdown
-# /my-command
+   Instructions Claude will follow when this skill is invoked...
+   ```
 
-Instructions for what this command does...
-```
+2. (Recommended) Add a `README.md` alongside it for humans, following the pattern used by the skills listed above — hero image, "Use this when...", "What you say to Claude", "Install", "What you'll see".
 
-### Hooks
+3. Run `./install.sh --list` to verify your skill is detected, then `./install.sh --skills my-skill` to install it locally.
 
-Add Python or shell scripts to `hooks/`:
+4. Open a PR.
 
-```python
-#!/usr/bin/env python3
-# hooks/my_hook.py
-# Pre-tool hook that validates something
-```
-
-## Contributing
-
-1. Add your component to the appropriate directory
-2. Test with `./install.sh --list` to verify it's detected
-3. Install and test in a project
-4. Submit a PR
+---
 
 ## License
 
