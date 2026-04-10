@@ -1,0 +1,1470 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Claude Toolkit — README Review</title>
+    <style>
+      /*
+       * UX Mockup Shell — provides feedback UI, version history,
+       * viewport toggle, and clipboard export. Claude fills in the
+       * actual design content inside each .mockup-section.
+       *
+       * STRUCTURE:
+       *   .mockup-section[data-section-id]
+       *     .section-header  (nav label visible in sticky bar)
+       *     .version-container
+       *       .version[data-version="1"]  (Claude's design content)
+       *       .version[data-version="2"]  (added on iteration)
+       *     .version-nav     (auto-shown when >1 version)
+       *     .feedback-area   (textarea + status)
+       */
+
+      * {
+        margin: 0;
+        padding: 0;
+        box-sizing: border-box;
+      }
+      body {
+        font-family:
+          -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+        background: #f5f5f0;
+        color: #333;
+      }
+
+      /* ── Sticky Nav ── */
+      .mockup-nav {
+        position: sticky;
+        top: 0;
+        z-index: 100;
+        background: #1e1e1e;
+        color: #fff;
+        padding: 10px 16px;
+        display: flex;
+        gap: 6px;
+        flex-wrap: wrap;
+        align-items: center;
+        box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
+      }
+      .mockup-nav .title {
+        font-size: 14px;
+        font-weight: 600;
+        margin-right: 12px;
+        white-space: nowrap;
+      }
+      .mockup-nav a {
+        color: #a8c8ff;
+        text-decoration: none;
+        font-size: 12px;
+        padding: 3px 8px;
+        border-radius: 4px;
+        border: 1px solid rgba(255, 255, 255, 0.15);
+        transition: background 0.15s;
+      }
+      .mockup-nav a:hover {
+        background: rgba(255, 255, 255, 0.1);
+      }
+
+      /* ── Viewport Toggle ── */
+      .viewport-toggle {
+        display: flex;
+        gap: 2px;
+        margin-left: 8px;
+        background: rgba(255, 255, 255, 0.08);
+        border-radius: 6px;
+        padding: 2px;
+      }
+      .viewport-toggle button {
+        background: transparent;
+        border: none;
+        color: rgba(255, 255, 255, 0.5);
+        padding: 4px 10px;
+        border-radius: 4px;
+        font-size: 12px;
+        font-weight: 600;
+        cursor: pointer;
+        font-family: inherit;
+        transition: all 0.15s;
+        display: flex;
+        align-items: center;
+        gap: 4px;
+      }
+      .viewport-toggle button:hover {
+        color: rgba(255, 255, 255, 0.8);
+      }
+      .viewport-toggle button.active {
+        background: rgba(255, 255, 255, 0.15);
+        color: #fff;
+      }
+      .viewport-toggle svg {
+        width: 14px;
+        height: 14px;
+        fill: currentColor;
+      }
+
+      .mockup-nav .copy-all-btn {
+        margin-left: auto;
+        background: #2563eb;
+        color: #fff;
+        border: none;
+        padding: 6px 14px;
+        border-radius: 6px;
+        font-size: 12px;
+        font-weight: 600;
+        cursor: pointer;
+        font-family: inherit;
+        transition: background 0.15s;
+      }
+      .mockup-nav .copy-all-btn:hover {
+        background: #1d4ed8;
+      }
+      .mockup-nav .copy-all-btn.copied {
+        background: #16a34a;
+      }
+
+      /* ── Section layout ── */
+      .mockup-section {
+        max-width: 600px;
+        margin: 40px auto;
+        padding: 0 16px;
+      }
+      .mockup-section.wide {
+        max-width: 800px;
+      }
+
+      /* ── Viewport-aware section widths ── */
+      body.viewport-mobile .mockup-section,
+      body.viewport-mobile .mockup-section.wide {
+        max-width: 600px;
+      }
+      body.viewport-desktop .mockup-section {
+        max-width: 900px;
+      }
+      body.viewport-desktop .mockup-section.wide {
+        max-width: 1200px;
+      }
+
+      /* ── Iframe frame for live-capture sections ── */
+      .iframe-frame {
+        border: 1px solid #ddd;
+        border-radius: 8px;
+        overflow: hidden;
+        background: #fff;
+        position: relative;
+        transition: width 0.3s ease;
+        margin: 0 auto;
+      }
+      .iframe-frame iframe {
+        width: 100%;
+        border: none;
+        display: block;
+      }
+      /* Mobile viewport constrains iframe-frame width */
+      body.viewport-mobile .iframe-frame {
+        max-width: 375px;
+      }
+      body.viewport-desktop .iframe-frame {
+        max-width: 100%;
+      }
+      /* Device chrome hint for mobile */
+      body.viewport-mobile .iframe-frame::before {
+        content: "";
+        display: block;
+        height: 24px;
+        background: #f3f4f6;
+        border-bottom: 1px solid #e5e5e5;
+        border-radius: 8px 8px 0 0;
+      }
+      body.viewport-mobile .iframe-frame::after {
+        content: "";
+        display: block;
+        width: 40px;
+        height: 4px;
+        border-radius: 2px;
+        background: #d1d5db;
+        margin: -16px auto 0;
+        position: relative;
+        top: -4px;
+      }
+
+      .section-label {
+        background: #1e1e1e;
+        color: #fff;
+        display: inline-block;
+        padding: 4px 12px;
+        border-radius: 4px;
+        font-size: 12px;
+        font-weight: 600;
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+        margin-bottom: 12px;
+      }
+      .section-desc {
+        font-size: 13px;
+        color: #888;
+        margin-bottom: 16px;
+        line-height: 1.5;
+      }
+
+      .section-divider {
+        height: 1px;
+        background: #ddd;
+        margin: 48px 0;
+      }
+
+      /* ── Version container ── */
+      .version-container {
+        position: relative;
+      }
+      .version {
+        display: none;
+      }
+      .version.active {
+        display: block;
+      }
+
+      /* ── Version nav ── */
+      .version-nav {
+        display: none; /* shown by JS when >1 version */
+        align-items: center;
+        justify-content: center;
+        gap: 12px;
+        margin-top: 12px;
+        padding: 8px;
+        background: #fff;
+        border: 1px solid #e5e5e5;
+        border-radius: 8px;
+      }
+      .version-nav.visible {
+        display: flex;
+      }
+      .version-nav button {
+        background: #f3f4f6;
+        border: 1px solid #d1d5db;
+        border-radius: 6px;
+        padding: 4px 12px;
+        font-size: 12px;
+        font-family: inherit;
+        cursor: pointer;
+        color: #374151;
+        transition: all 0.15s;
+      }
+      .version-nav button:hover:not(:disabled) {
+        background: #e5e7eb;
+      }
+      .version-nav button:disabled {
+        opacity: 0.35;
+        cursor: default;
+      }
+      .version-nav .version-label {
+        font-size: 12px;
+        font-weight: 600;
+        color: #6b7280;
+        min-width: 80px;
+        text-align: center;
+      }
+
+      /* ── Feedback area ── */
+      .feedback-area {
+        margin-top: 16px;
+        background: #fff;
+        border: 1px solid #e5e5e5;
+        border-radius: 8px;
+        padding: 12px;
+      }
+      .feedback-area label {
+        display: block;
+        font-size: 11px;
+        font-weight: 600;
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+        color: #888;
+        margin-bottom: 6px;
+      }
+      .feedback-area textarea {
+        width: 100%;
+        min-height: 80px;
+        border: 1px solid #e5e5e5;
+        border-radius: 6px;
+        padding: 10px;
+        font-family: inherit;
+        font-size: 14px;
+        line-height: 1.5;
+        resize: vertical;
+        color: #333;
+      }
+      .feedback-area textarea:focus {
+        outline: none;
+        border-color: #2563eb;
+        box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.1);
+      }
+      .feedback-area .char-count {
+        font-size: 11px;
+        color: #aaa;
+        text-align: right;
+        margin-top: 4px;
+      }
+
+      /* ── Viewport indicator badge ── */
+      .feedback-area .viewport-badge {
+        display: inline-block;
+        font-size: 10px;
+        font-weight: 600;
+        text-transform: uppercase;
+        letter-spacing: 0.06em;
+        padding: 2px 6px;
+        border-radius: 3px;
+        background: #e5e7eb;
+        color: #6b7280;
+        margin-left: 6px;
+      }
+
+      /* ── Design note callouts ── */
+      .design-note {
+        background: #fffbeb;
+        border: 1px solid #fcd34d;
+        border-radius: 8px;
+        padding: 10px 14px;
+        margin: 12px 0;
+        font-size: 12px;
+        color: #92400e;
+        line-height: 1.5;
+      }
+      .design-note strong {
+        font-weight: 600;
+      }
+      .design-note.future {
+        background: #eff6ff;
+        border-color: #93c5fd;
+        color: #1e40af;
+      }
+      .design-note.info {
+        background: #f0fdf4;
+        border-color: #86efac;
+        color: #166534;
+      }
+    
+/* README content rendering */
+.readme-content { background: #fff; border: 1px solid #e5e5e5; border-radius: 8px; padding: 28px 36px; max-width: none; }
+.readme-content h1 { font-size: 28px; font-weight: 700; margin: 4px 0 12px; color: #0f172a; letter-spacing: -0.01em; }
+.readme-content h1:first-child { margin-top: 0; }
+.readme-content h2 { font-size: 18px; font-weight: 600; margin: 24px 0 10px; color: #0f172a; border-bottom: 1px solid #e5e7eb; padding-bottom: 6px; }
+.readme-content h3 { font-size: 14px; font-weight: 600; margin: 18px 0 8px; color: #334155; text-transform: none; }
+.readme-content blockquote { border-left: 3px solid #2563eb; padding: 4px 0 4px 14px; margin: 8px 0 18px; color: #475569; font-style: italic; font-size: 15px; }
+.readme-content p { margin: 8px 0; font-size: 14px; line-height: 1.6; color: #334155; }
+.readme-content ul, .readme-content ol { margin: 8px 0 14px 22px; }
+.readme-content li { font-size: 14px; line-height: 1.6; color: #334155; margin: 4px 0; }
+.readme-content code { background: #f1f5f9; color: #0f172a; padding: 1px 6px; border-radius: 3px; font-size: 12.5px; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+.readme-content pre { background: #0f172a; color: #e2e8f0; padding: 14px 16px; border-radius: 8px; overflow-x: auto; margin: 10px 0 14px; font-size: 12.5px; line-height: 1.55; }
+.readme-content pre code { background: transparent; color: inherit; padding: 0; font-size: inherit; }
+.readme-content a { color: #2563eb; text-decoration: none; border-bottom: 1px solid rgba(37,99,235,0.3); }
+.readme-content a:hover { border-bottom-color: #2563eb; }
+.readme-content img { max-width: 100%; border-radius: 8px; margin: 8px 0 14px; display: block; box-shadow: 0 2px 12px rgba(15,23,42,0.08); }
+.readme-content table { width: 100%; border-collapse: collapse; margin: 12px 0 16px; font-size: 13px; }
+.readme-content th { background: #f1f5f9; color: #0f172a; font-weight: 600; text-align: left; padding: 8px 12px; border: 1px solid #e5e7eb; }
+.readme-content td { padding: 8px 12px; border: 1px solid #e5e7eb; color: #334155; vertical-align: top; }
+.readme-content td code { white-space: nowrap; }
+.readme-content hr { border: none; border-top: 1px solid #e5e7eb; margin: 20px 0; }
+
+/* Section label widened for the group + id */
+.mockup-section { max-width: 860px; }
+body.viewport-desktop .mockup-section { max-width: 1040px; }
+body.viewport-desktop .mockup-section.wide { max-width: 1040px; }
+
+    </style>
+  </head>
+  <body class="viewport-desktop">
+    <nav class="mockup-nav">
+      <span class="title">Claude Toolkit — README Review</span>
+      <!-- NAV_LINKS: Claude generates anchor links here -->
+      <a href="#_overall">overall</a>
+      <a href="#ux-mockup">ux-mockup</a>
+      <a href="#frontend-design">frontend-design</a>
+      <a href="#qa-checklist">qa-checklist</a>
+      <a href="#testing-webapps">testing-webapps</a>
+      <a href="#consensus-brainstormer">consensus-brainstormer</a>
+      <a href="#debate-chamber">debate-chamber</a>
+      <a href="#research-orchestrator">research-orchestrator</a>
+      <a href="#prd">prd</a>
+      <a href="#handoff">handoff</a>
+      <a href="#ralph">ralph</a>
+      <a href="#html-report">html-report</a>
+      <a href="#video-course-site">video-course-site</a>
+      <a href="#insight-harness">insight-harness</a>
+      <a href="#init">init</a>
+
+      <!-- Viewport Toggle -->
+      <div class="viewport-toggle">
+        <button data-viewport="mobile" title="Mobile (375px)">
+          <svg viewBox="0 0 24 24">
+            <path
+              d="M7 2h10a2 2 0 012 2v16a2 2 0 01-2 2H7a2 2 0 01-2-2V4a2 2 0 012-2zm5 18a1 1 0 100-2 1 1 0 000 2z"
+            />
+          </svg>
+          Mobile
+        </button>
+        <button
+          data-viewport="desktop"
+          class="active"
+          title="Desktop (full width)"
+        >
+          <svg viewBox="0 0 24 24">
+            <path
+              d="M3 4h18a1 1 0 011 1v11a1 1 0 01-1 1H3a1 1 0 01-1-1V5a1 1 0 011-1zm5 16h8m-4-3v3"
+            />
+          </svg>
+          Desktop
+        </button>
+      </div>
+
+      <button class="copy-all-btn" onclick="copyAllFeedback()">
+        Copy All Feedback
+      </button>
+    </nav>
+
+    <!-- SECTIONS: Claude generates mockup sections here -->
+    
+  <div class="mockup-section" data-section-id="_overall" id="_overall">
+    <span class="section-label">Overall — template, main README, anything global</span>
+    <p class="section-desc">Feedback that doesn't belong to any single skill: the template itself, the main README primer, the grouping, install instructions, the screenshot strategy by skill category. Per-skill feedback goes in the sections below.</p>
+    <div class="version-container">
+      <div class="version active" data-version="1">
+        <div class="readme-content">
+          <h2>Review checklist</h2>
+          <ul>
+            <li><strong>Template</strong> — is the section order right? (tagline → hero → Use this when → What you say to Claude → Install → What you'll see → See also)</li>
+            <li><strong>Length</strong> — 250-400 words per README. Too long? Too short?</li>
+            <li><strong>Voice</strong> — does it read like a human, not marketing copy?</li>
+            <li><strong>Screenshots</strong> — do the hero images actually sell the skill? The multi-agent ones got diagrams instead of screenshots; init and testing-webapps have no hero at all. Right calls?</li>
+            <li><strong>Main README primer</strong> — does "What is a skill?" actually answer the newcomer's question?</li>
+            <li><strong>Grouping</strong> — are the 5 categories (Design & UX / Testing & QA / Multi-agent / Planning / Reporting) useful, or should they be reorganized?</li>
+          </ul>
+          <p><strong>How to give feedback:</strong> type in the textareas under each section. When done, click <em>Copy All Feedback</em> in the top-right nav, then paste the JSON back to Claude.</p>
+        </div>
+      </div>
+    </div>
+    <div class="feedback-area">
+      <label>Overall feedback <span class="viewport-badge">desktop</span></label>
+      <textarea id="fb-_overall" placeholder="Template, tone, grouping, screenshots, primer — anything global..."></textarea>
+      <div class="char-count"></div>
+    </div>
+  </div>
+  <div class="section-divider"></div>
+
+  <div class="mockup-section" data-section-id="ux-mockup" id="ux-mockup">
+    <span class="section-label">Design & UX — ux-mockup</span>
+    <div class="version-container">
+      <div class="version active" data-version="1">
+        <div class="readme-content"><h1>ux-mockup</h1>
+<blockquote>
+<p>Generate self-contained HTML mockups with built-in feedback collection, version history, and mobile/desktop toggle — for designers iterating with stakeholders.</p>
+</blockquote>
+<p><img src="../../skills/ux-mockup/assets/hero.png" alt="ux-mockup hero — pricing page with populated feedback textarea"></p>
+<h2>Use this when...</h2>
+<ul>
+<li>You&#39;re redesigning a page and need non-technical stakeholders to leave feedback <strong>without Figma accounts, logins, or setup</strong></li>
+<li>You want feedback <strong>anchored to specific sections</strong> — not vague &quot;I don&#39;t like the header&quot; messages in Slack</li>
+<li>You want to iterate on an existing live page <strong>without touching the real codebase</strong></li>
+<li>You need a single HTML file you can <strong>email or drop in a shared folder</strong>, not a hosted prototype with auth</li>
+<li>You need to compare <strong>multiple versions side-by-side</strong> while collecting feedback on each one</li>
+</ul>
+<h2>What you say to Claude</h2>
+<pre><code>Mock up the new pricing page with three tiers (free, pro, scale).
+I want to show it to two stakeholders and collect their feedback.
+</code></pre>
+<p>Claude generates a single HTML file at <code>docs/mockups/pricing.html</code>, opens it in your browser, and you send the link or the file itself to reviewers. They type feedback into each section&#39;s textarea and click <strong>Copy All Feedback</strong> to get a JSON blob they paste back into the chat.</p>
+<p>For iterating on an existing live page:</p>
+<pre><code>Mock up changes to the /dashboard page — start by capturing
+what&#39;s there now, then propose a denser layout as v2.
+</code></pre>
+<h2>Install</h2>
+<pre><code class="language-bash"># From the claude-toolkit repo
+./install.sh --skills ux-mockup             # into current project
+./install.sh --global --skills ux-mockup    # into ~/.claude (all projects)
+</code></pre>
+<p>After install, Claude will invoke this skill automatically when you mention &quot;mockup&quot;, &quot;design review&quot;, or &quot;mock up the flow&quot;. You can also trigger it explicitly with phrases like <em>&quot;use the ux-mockup skill to...&quot;</em>.</p>
+<p>New to skills? See the <a href="../../README.md#what-is-a-skill">main README</a> for a one-minute primer.</p>
+<h2>What you&#39;ll see</h2>
+<p>The generated HTML file is fully self-contained (no CDN, no build step, works offline) and includes:</p>
+<ul>
+<li><strong>Per-section feedback textareas</strong> — every design section gets its own comment box</li>
+<li><strong>Version history nav</strong> — prev/next buttons flip between v1, v2, v3... of the same section</li>
+<li><strong>Mobile/desktop toggle</strong> — swap the whole page between 375px and full-width</li>
+<li><strong>Copy All Feedback button</strong> — exports every textarea as timestamped JSON to the clipboard</li>
+<li><strong>Design-note callouts</strong> — yellow &quot;Change:&quot;, blue &quot;Future:&quot;, green &quot;Info:&quot; boxes for reviewer context</li>
+</ul>
+<p>Reviewers don&#39;t install anything. They open the file, read, type, click Copy All Feedback, and paste the JSON back to you.</p>
+<h2>The two modes</h2>
+<p><strong>From-scratch mode</strong> — for new pages or components with no existing reference. Claude designs the layout, applies project CSS if available, and generates v1. You iterate by telling Claude what to change, and v2 is added to the same file with the nav auto-showing.</p>
+<p><strong>Live-capture mode</strong> — for reviewing and iterating on a page that already exists. Claude embeds the actual live page in an iframe (if publicly accessible), or extracts the real HTML and styles from your project source (for auth-protected or dynamic pages). The key rule: <strong>never approximate what you can embed or extract.</strong> A hand-drawn reconstruction that looks &quot;close enough&quot; defeats the purpose — reviewers need to see exactly what users see.</p>
+<h2>See also</h2>
+<ul>
+<li><a href="../../skills/qa-checklist/README.md"><code>qa-checklist</code></a> — same feedback-collection pattern, but for manual QA testing after a PR</li>
+<li><a href="../../skills/frontend-design/README.md"><code>frontend-design</code></a> — for implementing the approved design once feedback converges</li>
+</ul>
+</div>
+      </div>
+    </div>
+    <div class="feedback-area">
+      <label>Feedback on <code>ux-mockup</code> README <span class="viewport-badge">desktop</span></label>
+      <textarea id="fb-ux-mockup" placeholder="What would you change about this README? Tone, missing info, unclear sections, wrong screenshot, etc."></textarea>
+      <div class="char-count"></div>
+    </div>
+  </div>
+  <div class="section-divider"></div>
+
+  <div class="mockup-section" data-section-id="frontend-design" id="frontend-design">
+    <span class="section-label">Design & UX — frontend-design</span>
+    <div class="version-container">
+      <div class="version active" data-version="1">
+        <div class="readme-content"><h1>frontend-design</h1>
+<blockquote>
+<p>Build distinctive, production-grade web interfaces with a strong aesthetic point-of-view — not generic AI slop.</p>
+</blockquote>
+<p><img src="../../skills/frontend-design/assets/hero.jpg" alt="frontend-design hero — editorial magazine layout with Fraunces display type and rust/moss color palette"></p>
+<h2>Use this when...</h2>
+<ul>
+<li>You&#39;re building a landing page, marketing site, or hero section and <strong>the default &quot;Inter on white with purple gradients&quot; aesthetic is unacceptable</strong></li>
+<li>You need a component, dashboard, or admin panel that <strong>actually commits to a visual identity</strong> (editorial, brutalist, retro-futuristic, etc.)</li>
+<li>You&#39;re tired of AI-generated UI that all looks the same and want Claude to <strong>pick a bold direction and execute it with precision</strong></li>
+<li>You have a vague vibe in mind (&quot;something that feels like a print magazine&quot; / &quot;cyberpunk terminal&quot; / &quot;soft pastel wellness app&quot;) and want it turned into working code</li>
+<li>You&#39;re implementing an approved mockup and want the final code to <strong>keep the distinctiveness</strong> instead of sanding it down to defaults</li>
+</ul>
+<h2>What you say to Claude</h2>
+<pre><code>Build a landing page for a small-batch coffee roaster.
+I want an editorial magazine feel — not another minimal SaaS site.
+Distinctive display font, warm paper background, commit to it.
+</code></pre>
+<p>Claude picks a conceptual direction (tone, typography, palette, layout), loads distinctive Google Fonts, and writes real HTML/CSS/JS (or React/Vue) with thoughtful spacing, animation, and typographic detail — no Inter, no purple gradients, no cookie-cutter hero sections.</p>
+<h2>Install</h2>
+<pre><code class="language-bash"># From the claude-toolkit repo
+./install.sh --skills frontend-design             # into current project
+./install.sh --global --skills frontend-design    # into ~/.claude (all projects)
+</code></pre>
+<p>After install, Claude invokes this skill automatically when you ask for frontend work — landing pages, components, dashboards, marketing sites. You can also trigger it explicitly with <em>&quot;use the frontend-design skill to...&quot;</em>.</p>
+<p>New to skills? See the <a href="../../README.md#what-is-a-skill">main README</a> for a one-minute primer.</p>
+<h2>What you&#39;ll see</h2>
+<ul>
+<li><strong>A committed aesthetic direction</strong> — brutalist, editorial, retro-futuristic, soft organic, industrial — not a blend of all of them</li>
+<li><strong>Distinctive typography</strong> — a display font paired with a refined body font, usually from Google Fonts, never Inter or Arial</li>
+<li><strong>Intentional color</strong> — dominant tones with sharp accents instead of timid, evenly-distributed palettes</li>
+<li><strong>Spatial composition with character</strong> — asymmetry, overlap, grid-breaking, generous negative space or controlled density</li>
+<li><strong>Production-grade code</strong> — real working HTML/CSS/JS that you can ship, not screenshot-only mockups</li>
+</ul>
+<p>The hero above is an example the skill produced for a fictional magazine called <em>Meridian</em> — Fraunces display type, cream paper background, rust-and-moss palette, sun/moon abstract, three-column bottom row. That&#39;s the quality bar.</p>
+<h2>See also</h2>
+<ul>
+<li><a href="../../skills/ux-mockup/README.md"><code>ux-mockup</code></a> — for iterating on design with stakeholder feedback <em>before</em> you commit to implementation</li>
+<li><a href="../../skills/testing-webapps/README.md"><code>testing-webapps</code></a> — for visually verifying the built result matches the design intent</li>
+</ul>
+</div>
+      </div>
+    </div>
+    <div class="feedback-area">
+      <label>Feedback on <code>frontend-design</code> README <span class="viewport-badge">desktop</span></label>
+      <textarea id="fb-frontend-design" placeholder="What would you change about this README? Tone, missing info, unclear sections, wrong screenshot, etc."></textarea>
+      <div class="char-count"></div>
+    </div>
+  </div>
+  <div class="section-divider"></div>
+
+  <div class="mockup-section" data-section-id="qa-checklist" id="qa-checklist">
+    <span class="section-label">Testing & QA — qa-checklist</span>
+    <div class="version-container">
+      <div class="version active" data-version="1">
+        <div class="readme-content"><h1>qa-checklist</h1>
+<blockquote>
+<p>Generate an interactive manual-QA checklist as a self-contained HTML page after a PR lands — with pass/fail/skip buttons, per-test notes, and clipboard export back into chat.</p>
+</blockquote>
+<p><img src="../../skills/qa-checklist/assets/hero.png" alt="qa-checklist hero — PR #428 pricing page redesign with a mix of pass/fail results and a populated feedback note"></p>
+<h2>Use this when...</h2>
+<ul>
+<li>You just opened a PR and need to <strong>manually verify the parts your automated tests can&#39;t cover</strong> (visual, responsive, flows, real API behavior)</li>
+<li>You want a <strong>single HTML file per PR</strong> you can open in a browser, click through, and attach to the PR description when you&#39;re done</li>
+<li>You need a <strong>non-developer teammate</strong> to test a preview deployment without teaching them your test framework</li>
+<li>You want QA results to come back as <strong>structured JSON you paste into chat</strong>, not a wall of Slack messages</li>
+<li>You want Claude to read the PR diff and <strong>tell you what to test</strong> instead of writing the checklist yourself</li>
+</ul>
+<h2>What you say to Claude</h2>
+<pre><code>I just opened PR #428 for the pricing page redesign.
+Generate a QA checklist for the manual stuff the e2e tests won&#39;t catch.
+</code></pre>
+<p>Claude runs <code>gh pr view</code>, reads the diff and existing tests, finds the Vercel preview URL, and writes a self-contained HTML file to <code>docs/qa/428-pricing-redesign.html</code>. It opens in your browser automatically. You click through, mark each test pass/fail/skip, add notes, and hit <strong>Copy All Feedback</strong> to paste the results back into the conversation.</p>
+<h2>Install</h2>
+<pre><code class="language-bash"># From the claude-toolkit repo
+./install.sh --skills qa-checklist             # into current project
+./install.sh --global --skills qa-checklist    # into ~/.claude (all projects)
+</code></pre>
+<p>After install, Claude invokes this skill automatically when you mention &quot;qa checklist&quot;, &quot;manual testing&quot;, &quot;what should I test&quot;, or right after a PR is created. You can also trigger it explicitly with <em>&quot;use the qa-checklist skill to...&quot;</em>.</p>
+<p>New to skills? See the <a href="../../README.md#what-is-a-skill">main README</a> for a one-minute primer.</p>
+<h2>What you&#39;ll see</h2>
+<p>The generated HTML file is fully self-contained (no CDN, no build step) and includes:</p>
+<ul>
+<li><strong>Sticky nav</strong> with category anchor links and a <strong>Copy All Feedback</strong> button</li>
+<li><strong>Summary banner</strong> showing PR title, preview URL, branch, and a live progress bar</li>
+<li><strong>Numbered test cards</strong> grouped by category (UI, API, responsive, etc.) with concrete steps and expected results</li>
+<li><strong>Pass / Fail / Skip buttons</strong> per test that color the card border and update progress</li>
+<li><strong>Per-test notes textareas</strong> for describing what you actually observed</li>
+<li><strong>JSON export</strong> via clipboard — a structured summary of passed/failed/skipped tests plus notes, ready to paste back to Claude</li>
+</ul>
+<h2>See also</h2>
+<ul>
+<li><a href="../../skills/ux-mockup/README.md"><code>ux-mockup</code></a> — same feedback-collection pattern, but for design review before a PR is even written</li>
+<li><a href="../../skills/manual-qa-collab/README.md"><code>manual-qa-collab</code></a> — for driving the browser yourself with Playwright instead of handing the checklist to a human</li>
+</ul>
+</div>
+      </div>
+    </div>
+    <div class="feedback-area">
+      <label>Feedback on <code>qa-checklist</code> README <span class="viewport-badge">desktop</span></label>
+      <textarea id="fb-qa-checklist" placeholder="What would you change about this README? Tone, missing info, unclear sections, wrong screenshot, etc."></textarea>
+      <div class="char-count"></div>
+    </div>
+  </div>
+  <div class="section-divider"></div>
+
+  <div class="mockup-section" data-section-id="testing-webapps" id="testing-webapps">
+    <span class="section-label">Testing & QA — testing-webapps</span>
+    <div class="version-container">
+      <div class="version active" data-version="1">
+        <div class="readme-content"><h1>testing-webapps</h1>
+<blockquote>
+<p>Route web-app testing to the right tool — Claude for Chrome when judgment matters, Playwright when you need deterministic assertions.</p>
+</blockquote>
+<table>
+<thead>
+<tr>
+<th>Scenario</th>
+<th>Tool</th>
+<th>Why</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>&quot;Does this look right?&quot;</td>
+<td>Chrome</td>
+<td>Visual judgment needed</td>
+</tr>
+<tr>
+<td>&quot;Check console errors&quot;</td>
+<td>Chrome</td>
+<td>Live debugging</td>
+</tr>
+<tr>
+<td>&quot;Why is this broken?&quot;</td>
+<td>Chrome</td>
+<td>Interactive debugging</td>
+</tr>
+<tr>
+<td>&quot;Compare to Figma&quot;</td>
+<td>Chrome</td>
+<td>Visual comparison</td>
+</tr>
+<tr>
+<td>&quot;Run on every PR&quot;</td>
+<td>Playwright</td>
+<td>CI/CD integration</td>
+</tr>
+<tr>
+<td>&quot;Test Safari + Firefox&quot;</td>
+<td>Playwright</td>
+<td>Cross-browser</td>
+</tr>
+<tr>
+<td>&quot;Performance testing&quot;</td>
+<td>Playwright</td>
+<td>Precise measurements</td>
+</tr>
+</tbody></table>
+<h2>Use this when...</h2>
+<ul>
+<li>You&#39;re testing a UI change and <strong>aren&#39;t sure whether to click around in Chrome or write a Playwright script</strong> — the table above picks for you</li>
+<li>You need to <strong>visually verify</strong> something (&quot;does this match Figma?&quot;, &quot;does the modal feel right?&quot;) and want Claude driving a real browser</li>
+<li>You just fixed a bug and want to <strong>lock it in with a regression test</strong> before merging</li>
+<li>You need <strong>cross-browser or headless CI testing</strong> and don&#39;t want to reinvent the Playwright setup</li>
+<li>A Playwright test is <strong>failing mysteriously</strong> and you want Claude to jump into Chrome to debug it interactively</li>
+</ul>
+<h2>What you say to Claude</h2>
+<pre><code>Test the checkout flow on localhost:3000.
+Start in Chrome so I can see it work, then codify the
+happy path as a Playwright test I can run in CI.
+</code></pre>
+<p>Claude starts in Chrome (visual pass, console check, exploratory clicks), confirms the flow works, then writes a Playwright script using the ready-to-use <code>test_template.py</code> and <code>with_server.py</code> helpers in the skill. You run it locally, drop it into CI, and the bug can never come back silently.</p>
+<h2>Install</h2>
+<pre><code class="language-bash"># From the claude-toolkit repo
+./install.sh --skills testing-webapps             # into current project
+./install.sh --global --skills testing-webapps    # into ~/.claude (all projects)
+</code></pre>
+<p>After install, Claude invokes this skill automatically when you mention testing a webapp, checking UI, debugging a page, or writing browser tests. You can also trigger it explicitly with <em>&quot;use the testing-webapps skill to...&quot;</em>.</p>
+<p>New to skills? See the <a href="../../README.md#what-is-a-skill">main README</a> for a one-minute primer.</p>
+<h2>What you&#39;ll see</h2>
+<ul>
+<li><strong>A tool choice, not a tool lecture</strong> — Claude picks Chrome or Playwright based on the scenario and tells you why in one line</li>
+<li><strong>Chrome sessions</strong> for visual verification, console inspection, and exploratory testing where human judgment matters</li>
+<li><strong>Playwright scripts</strong> using the bundled <code>test_template.py</code> and <code>with_server.py</code> (starts a dev server, runs tests, cleans up) for repeatable assertions</li>
+<li><strong>A build → test → codify → debug loop</strong> — Chrome to discover, Playwright to lock in, Chrome again when tests fail unexpectedly</li>
+<li><strong>Reference docs bundled</strong> — <a href="playwright-patterns.md">playwright-patterns.md</a> for auth/forms/mocking and <a href="ci-cd-integration.md">ci-cd-integration.md</a> for GitHub Actions setup</li>
+</ul>
+<h2>See also</h2>
+<ul>
+<li><a href="../../skills/manual-qa-collab/README.md"><code>manual-qa-collab</code></a> — collaborative step-by-step QA walkthroughs when you want a human in the loop per step</li>
+<li><a href="../../skills/qa-checklist/README.md"><code>qa-checklist</code></a> — generate a post-PR manual QA checklist when automated tests can&#39;t cover everything</li>
+</ul>
+</div>
+      </div>
+    </div>
+    <div class="feedback-area">
+      <label>Feedback on <code>testing-webapps</code> README <span class="viewport-badge">desktop</span></label>
+      <textarea id="fb-testing-webapps" placeholder="What would you change about this README? Tone, missing info, unclear sections, wrong screenshot, etc."></textarea>
+      <div class="char-count"></div>
+    </div>
+  </div>
+  <div class="section-divider"></div>
+
+  <div class="mockup-section" data-section-id="consensus-brainstormer" id="consensus-brainstormer">
+    <span class="section-label">Multi-agent thinking — consensus-brainstormer</span>
+    <div class="version-container">
+      <div class="version active" data-version="1">
+        <div class="readme-content"><h1>consensus-brainstormer</h1>
+<blockquote>
+<p>Spawn 10 parallel agents with distinct cognitive framings, then surface the Mode (convergent high-confidence picks) and Outliers (creative single-agent ideas) — for strategic decisions where both safe bets and wild cards matter.</p>
+</blockquote>
+<p><img src="../../skills/consensus-brainstormer/assets/hero.png" alt="consensus-brainstormer hero — 10 agents fanning out from a strategic problem to Mode and Outliers synthesis boxes"></p>
+<h2>Use this when...</h2>
+<ul>
+<li>You&#39;re making an <strong>architecture or product-strategy decision</strong> and a single perspective keeps missing things</li>
+<li>You want <strong>both the safe play and the creative wildcard</strong> in one pass — not averaged into mush</li>
+<li>You suspect <strong>groupthink</strong> is shaping the current proposal and you want adversarial lenses (Contrarian, Risk Analyst, Disruptor) stress-testing it</li>
+<li>You need to <strong>justify a call to stakeholders</strong> and want to show &quot;10 independent perspectives converged on X&quot;</li>
+<li>You&#39;re evaluating 3-5 viable options and want to know which one has the <strong>broadest support across reasoning styles</strong></li>
+</ul>
+<h2>What you say to Claude</h2>
+<pre><code>Brainstorm with consensus: should we rewrite the payments service
+in Go, or keep patching the existing Node version?
+We have a 2-person backend team and 6 weeks.
+</code></pre>
+<p>Claude clarifies constraints, then fans out 10 Sonnet agents in parallel — each primed as a different persona (Contrarian, First-Principles, Traditionalist, Optimist, Risk Analyst, Systems Thinker, Customer Advocate, Pragmatist, Disruptor, Historian). Each returns a top-3 recommendation list. Claude then synthesizes the results itself (not a delegated agent) into Mode, Clusters, and Outliers.</p>
+<p>For lower-stakes decisions, add <em>&quot;quick&quot;</em> to use 5 agents. For high-stakes, add <em>&quot;deep&quot;</em> to run 3 adversarial follow-ups that try to break the top Mode picks.</p>
+<h2>Install</h2>
+<pre><code class="language-bash"># From the claude-toolkit repo
+./install.sh --skills consensus-brainstormer             # into current project
+./install.sh --global --skills consensus-brainstormer    # into ~/.claude (all projects)
+</code></pre>
+<p>After install, Claude invokes this skill automatically when you say &quot;brainstorm with consensus&quot;, &quot;multi-agent analysis&quot;, or &quot;get multiple perspectives on&quot;. You can also trigger it explicitly with <em>&quot;use the consensus-brainstormer skill to...&quot;</em>.</p>
+<p>New to skills? See the <a href="../../README.md#what-is-a-skill">main README</a> for a one-minute primer.</p>
+<h2>What you&#39;ll see</h2>
+<ul>
+<li><strong>Mode section</strong> — high-confidence recommendations endorsed by 3+ of 10 agents, ranked by endorsement count, with the framings that agreed</li>
+<li><strong>Clusters section</strong> — moderate-signal ideas backed by exactly 2 agents (worth considering, need more validation)</li>
+<li><strong>Outliers section</strong> — creative single-agent ideas with a &quot;potential value if correct&quot; note (preserved explicitly, never averaged away)</li>
+<li><strong>Tensions &amp; Trade-offs</strong> — places where agents directly contradicted each other, which usually reveal the real decision</li>
+<li><strong>Recommended Next Steps</strong> — 2-3 concrete actions drawn from the synthesis</li>
+</ul>
+<h2>See also</h2>
+<ul>
+<li><a href="../../skills/debate-chamber/README.md"><code>debate-chamber</code></a> — when you&#39;ve got a Mode from this skill but want to stress-test it through 3 rounds of iterative argument</li>
+<li><a href="../../skills/research-orchestrator/README.md"><code>research-orchestrator</code></a> — when the problem needs <em>external information</em> first (web research across axes), not just reasoning</li>
+</ul>
+</div>
+      </div>
+    </div>
+    <div class="feedback-area">
+      <label>Feedback on <code>consensus-brainstormer</code> README <span class="viewport-badge">desktop</span></label>
+      <textarea id="fb-consensus-brainstormer" placeholder="What would you change about this README? Tone, missing info, unclear sections, wrong screenshot, etc."></textarea>
+      <div class="char-count"></div>
+    </div>
+  </div>
+  <div class="section-divider"></div>
+
+  <div class="mockup-section" data-section-id="debate-chamber" id="debate-chamber">
+    <span class="section-label">Multi-agent thinking — debate-chamber</span>
+    <div class="version-container">
+      <div class="version active" data-version="1">
+        <div class="readme-content"><h1>debate-chamber</h1>
+<blockquote>
+<p>5 debaters argue across 3 sequential rounds — opening, critique, synthesis — then a Team Lead converges the full transcript into a unified implementation plan. For problems where the first answer is rarely the best answer.</p>
+</blockquote>
+<p><img src="../../skills/debate-chamber/assets/hero.png" alt="debate-chamber hero — 5 debaters in 3 sequential rounds feeding into a Team Lead that produces a unified plan"></p>
+<h2>Use this when...</h2>
+<ul>
+<li>You have an <strong>implementation plan</strong> and you want trade-offs argued through, not just listed</li>
+<li>The first proposed design feels right but you <strong>don&#39;t trust it yet</strong> — you want it attacked and refined</li>
+<li>You want ideas to <strong>collide and improve</strong> rather than just be collected in parallel</li>
+<li>You&#39;ve already run a consensus brainstorm and want to <strong>stress-test the Mode</strong> through iterative debate</li>
+<li>The decision has <strong>genuine trade-offs</strong> and the cost of being wrong justifies a slower, deeper process</li>
+</ul>
+<h2>What you say to Claude</h2>
+<pre><code>Debate this: we need a rate-limiting strategy for our public API.
+Options on the table are token bucket, fixed window, and sliding log.
+Argue through it and give me a plan.
+</code></pre>
+<p>Claude clarifies constraints, then runs Round 1 (5 debaters post opening positions independently — no cross-talk, prevents herding), Round 2 (each debater sees the full Round 1 transcript and must attack the weakest proposal + steal the best idea from another debater), and Round 3 (synthesis — each debater produces a final refined position). Then a single <strong>Opus Team Lead</strong> reads the complete transcript and produces a decision, a plan, and a &quot;What We&#39;re NOT Doing&quot; list.</p>
+<p>Add <em>&quot;quick&quot;</em> for 3 debaters × 2 rounds, or <em>&quot;deep&quot;</em> for a 4th adversarial round that tries to break the Team Lead&#39;s draft plan.</p>
+<h2>Install</h2>
+<pre><code class="language-bash"># From the claude-toolkit repo
+./install.sh --skills debate-chamber             # into current project
+./install.sh --global --skills debate-chamber    # into ~/.claude (all projects)
+</code></pre>
+<p>After install, Claude invokes this skill when you say &quot;debate this&quot;, &quot;argue through&quot;, or &quot;adversarial debate&quot;. You can also trigger it explicitly with <em>&quot;use the debate-chamber skill to...&quot;</em>.</p>
+<p>New to skills? See the <a href="../../README.md#what-is-a-skill">main README</a> for a one-minute primer.</p>
+<h2>What you&#39;ll see</h2>
+<ul>
+<li><strong>Decision Summary</strong> — 2-3 sentences stating what was chosen and why (a decision, not a hedge)</li>
+<li><strong>The Plan</strong> — numbered actionable steps, each tagged with which debater argued for it and the key risk identified during debate</li>
+<li><strong>What We&#39;re NOT Doing (and Why)</strong> — ideas that were proposed and explicitly rejected, with revisit conditions</li>
+<li><strong>Open Questions</strong> — genuine uncertainties the debate surfaced but couldn&#39;t resolve</li>
+<li><strong>Debate Scorecard</strong> — each debater&#39;s best contribution and biggest blind spot</li>
+</ul>
+<h2>Consensus vs Debate — which one?</h2>
+<table>
+<thead>
+<tr>
+<th>Dimension</th>
+<th>consensus-brainstormer</th>
+<th>debate-chamber</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Agent interaction</td>
+<td>Independent, no cross-talk</td>
+<td>Iterative, agents respond to each other</td>
+</tr>
+<tr>
+<td>Rounds</td>
+<td>1 (parallel)</td>
+<td>3 sequential + convergence</td>
+</tr>
+<tr>
+<td>Strength</td>
+<td>Breadth of ideas, outlier discovery</td>
+<td>Depth of analysis, idea refinement</td>
+</tr>
+<tr>
+<td>Speed</td>
+<td>Faster (1 parallel dispatch)</td>
+<td>Slower (3 sequential rounds)</td>
+</tr>
+<tr>
+<td>Best for</td>
+<td>&quot;What are our options?&quot;</td>
+<td>&quot;Which option is best and why?&quot;</td>
+</tr>
+</tbody></table>
+<h2>See also</h2>
+<ul>
+<li><a href="../../skills/consensus-brainstormer/README.md"><code>consensus-brainstormer</code></a> — when you need breadth and outliers first, before picking something to debate</li>
+<li><a href="../../skills/research-orchestrator/README.md"><code>research-orchestrator</code></a> — when the debate needs <em>external data</em> to be productive (pull findings first, then argue)</li>
+</ul>
+</div>
+      </div>
+    </div>
+    <div class="feedback-area">
+      <label>Feedback on <code>debate-chamber</code> README <span class="viewport-badge">desktop</span></label>
+      <textarea id="fb-debate-chamber" placeholder="What would you change about this README? Tone, missing info, unclear sections, wrong screenshot, etc."></textarea>
+      <div class="char-count"></div>
+    </div>
+  </div>
+  <div class="section-divider"></div>
+
+  <div class="mockup-section" data-section-id="research-orchestrator" id="research-orchestrator">
+    <span class="section-label">Multi-agent thinking — research-orchestrator</span>
+    <div class="version-container">
+      <div class="version active" data-version="1">
+        <div class="readme-content"><h1>research-orchestrator</h1>
+<blockquote>
+<p>Fan out 5 parallel Sonnet research agents across distinct axes, accumulate their findings to a file, then fan in with a single Opus synthesizer that deduplicates, confidence-weights, resolves conflicts, and writes the final report.</p>
+</blockquote>
+<p><img src="../../skills/research-orchestrator/assets/hero.png" alt="research-orchestrator hero — research query fanning out to 5 Sonnet agents, accumulating to disk, then converging through an Opus synthesizer to a final report"></p>
+<h2>Use this when...</h2>
+<ul>
+<li>You need <strong>multi-perspective research</strong> on a topic and a single web search won&#39;t cut it — you want Technical, Market, Trends, Risks, and Community angles simultaneously</li>
+<li>You&#39;re doing a <strong>competitive analysis</strong> or <strong>technology evaluation</strong> and need a report you can paste into a doc, not a chat-thread of findings</li>
+<li>You want <strong>source-cited findings with confidence scores</strong> — not a vibes-based summary</li>
+<li>You want parallel agents to run <strong>in the background</strong> while you keep working, getting notified as each completes</li>
+<li>You care about <strong>cross-axis corroboration</strong> — findings that showed up independently in 2+ axes are the ones you can actually trust</li>
+</ul>
+<h2>What you say to Claude</h2>
+<pre><code>Research this: what are the best approaches to building AI agents
+in 2026? I want to know the frameworks people are actually shipping,
+the common failure modes, and where the field is heading.
+</code></pre>
+<p>Claude decomposes the query into 5 research axes (e.g. Technical, Market, Practitioner Experience, Cost, Trends), shows them to you for confirmation, then spawns 5 Sonnet agents in parallel — each using WebSearch and WebFetch to investigate its axis. All findings accumulate into <code>~/active/research-YYYY-MM-DD.md</code> with finding IDs. Once all 5 complete, a single <strong>Opus synthesizer</strong> reads the full file and produces the final report.</p>
+<p>Add <em><code>--quick</code></em> to return results as soon as 3 of 5 agents finish (faster, coverage gaps flagged in the report).</p>
+<h2>Install</h2>
+<pre><code class="language-bash"># From the claude-toolkit repo
+./install.sh --skills research-orchestrator             # into current project
+./install.sh --global --skills research-orchestrator    # into ~/.claude (all projects)
+</code></pre>
+<p>After install, Claude invokes this skill automatically when you ask for research, competitive analysis, or technology evaluation. You can also trigger it explicitly with <em>&quot;use the research-orchestrator skill to...&quot;</em>.</p>
+<p>New to skills? See the <a href="../../README.md#what-is-a-skill">main README</a> for a one-minute primer.</p>
+<h2>What you&#39;ll see</h2>
+<ul>
+<li><strong>Executive Summary</strong> — 3-5 sentence answer to the original query</li>
+<li><strong>Key Findings</strong> ranked by confidence score (High/Medium/Low), each tagged with which axes corroborated it and a source URL</li>
+<li><strong>Cross-Axis Overlaps</strong> — findings that appeared in 2+ axes independently (highest confidence, the strongest signal)</li>
+<li><strong>Unique Outliers</strong> — surprising single-axis findings that warrant attention despite only appearing once</li>
+<li><strong>Conflicts &amp; Uncertainties</strong> — places where sources disagreed, the resolution protocol applied, and the final call</li>
+<li><strong>Consolidated Sources</strong> — deduplicated URL list grouped by axis, and a full transcript saved to <code>~/active/research-YYYY-MM-DD.md</code></li>
+</ul>
+<h2>See also</h2>
+<ul>
+<li><a href="../../skills/consensus-brainstormer/README.md"><code>consensus-brainstormer</code></a> — when the problem is reasoning through options you already know about, not pulling in new external information</li>
+<li><a href="../../skills/debate-chamber/README.md"><code>debate-chamber</code></a> — when you&#39;ve got the research and now need to argue through what to actually do with it</li>
+</ul>
+</div>
+      </div>
+    </div>
+    <div class="feedback-area">
+      <label>Feedback on <code>research-orchestrator</code> README <span class="viewport-badge">desktop</span></label>
+      <textarea id="fb-research-orchestrator" placeholder="What would you change about this README? Tone, missing info, unclear sections, wrong screenshot, etc."></textarea>
+      <div class="char-count"></div>
+    </div>
+  </div>
+  <div class="section-divider"></div>
+
+  <div class="mockup-section" data-section-id="prd" id="prd">
+    <span class="section-label">Planning & documents — prd</span>
+    <div class="version-container">
+      <div class="version active" data-version="1">
+        <div class="readme-content"><h1>prd</h1>
+<blockquote>
+<p>Turn a rough feature idea into a structured Product Requirements Document with lettered clarifying questions, numbered requirements, and verifiable acceptance criteria — saved as markdown, ready to hand to a junior dev or an autonomous agent.</p>
+</blockquote>
+<p><img src="../../skills/prd/assets/hero.png" alt="prd hero — rendered PRD markdown with problem, goals, non-goals, and lettered user stories"></p>
+<h2>Use this when...</h2>
+<ul>
+<li>You&#39;re <strong>starting a new feature</strong> and want to pressure-test the idea before anyone writes code</li>
+<li>You need a doc that&#39;s <strong>specific enough for a junior dev or an LLM to implement without guessing</strong></li>
+<li>You want <strong>acceptance criteria that are actually verifiable</strong>, not &quot;works correctly&quot; hand-waving</li>
+<li>You&#39;re about to kick off an autonomous coding loop (Ralph, Aider, Devin) and need a PRD <strong>the agent can turn into tasks</strong></li>
+<li>You want to <strong>force the scope conversation upfront</strong> — what&#39;s in, what&#39;s out, what the success metric is</li>
+</ul>
+<h2>What you say to Claude</h2>
+<pre><code>Write a PRD for a notifications bell — users should see unread
+counts, click to open a dropdown of recent items, and mark them
+as read. Ship it to the toolkit dashboard.
+</code></pre>
+<p>Claude asks 3-5 clarifying questions with lettered options (e.g., <em>&quot;1. Target user? A. All users B. Admins only C. ...&quot;</em>), you reply with &quot;1A, 2C, 3B&quot;, and the PRD is saved to <code>tasks/prd-notifications-bell.md</code> with user stories small enough to each fit in a single focused session.</p>
+<h2>Install</h2>
+<pre><code class="language-bash"># From the claude-toolkit repo
+./install.sh --skills prd             # into current project
+./install.sh --global --skills prd    # into ~/.claude (all projects)
+</code></pre>
+<p>After install, Claude auto-invokes this skill on phrases like <em>&quot;create a PRD&quot;</em>, <em>&quot;spec out this feature&quot;</em>, or <em>&quot;write requirements for...&quot;</em>. You can also trigger it explicitly.</p>
+<p>New to skills? See the <a href="../../README.md#what-is-a-skill">main README</a> for a one-minute primer.</p>
+<h2>What you&#39;ll see</h2>
+<p>The generated markdown file follows a strict structure designed for implementation, not for stakeholders:</p>
+<ul>
+<li><strong>Clarifying questions first</strong> — lettered multiple-choice so you reply with &quot;1A, 2C, 3B&quot; instead of paragraphs</li>
+<li><strong>Numbered functional requirements</strong> (<code>FR-1</code>, <code>FR-2</code>, ...) you can reference from code comments and PRs</li>
+<li><strong>User stories with verifiable acceptance criteria</strong> — each story small enough for one focused session</li>
+<li><strong>Explicit non-goals section</strong> — scope boundaries called out, not left ambiguous</li>
+<li><strong>Success metrics</strong> that are measurable, not vibes (&quot;login completion &gt; 88%&quot;)</li>
+</ul>
+<p>Every UI story automatically gets <code>Verify in browser using dev-browser skill</code> as an acceptance criterion, so frontend work isn&#39;t marked done until it&#39;s visually confirmed.</p>
+<h2>Why &quot;lettered options&quot;</h2>
+<p>Clarifying questions in free-form prose turn into a slow back-and-forth. Lettered options compress the round trip — Claude asks five questions at once, you answer with a 10-character reply, and the PRD generates immediately. If none of the options fit, the last choice is always <em>&quot;Other: [please specify]&quot;</em>.</p>
+<h2>See also</h2>
+<ul>
+<li><a href="../../skills/ralph/README.md"><code>ralph</code></a> — converts the PRD this skill produces into <code>prd.json</code> for the Ralph autonomous agent loop</li>
+<li><a href="../../skills/handoff/README.md"><code>handoff</code></a> — write an end-of-session snapshot referencing which stories from the PRD are done</li>
+</ul>
+</div>
+      </div>
+    </div>
+    <div class="feedback-area">
+      <label>Feedback on <code>prd</code> README <span class="viewport-badge">desktop</span></label>
+      <textarea id="fb-prd" placeholder="What would you change about this README? Tone, missing info, unclear sections, wrong screenshot, etc."></textarea>
+      <div class="char-count"></div>
+    </div>
+  </div>
+  <div class="section-divider"></div>
+
+  <div class="mockup-section" data-section-id="handoff" id="handoff">
+    <span class="section-label">Planning & documents — handoff</span>
+    <div class="version-container">
+      <div class="version active" data-version="1">
+        <div class="readme-content"><h1>handoff</h1>
+<blockquote>
+<p>End-of-session skill that writes a <code>HANDOFF.md</code> snapshot and appends learnings to <code>MEMORY.md</code> — always in a background sub-agent, so it never blocks you wrapping up.</p>
+</blockquote>
+<p><img src="../../skills/handoff/assets/hero.png" alt="handoff hero — rendered HANDOFF.md with last session, what worked, broken, next up, and key learnings"></p>
+<h2>Use this when...</h2>
+<ul>
+<li>You&#39;re <strong>wrapping up a session</strong> and want the next one (maybe tomorrow, maybe a fresh Claude instance) to pick up without asking &quot;what were we doing?&quot;</li>
+<li>You&#39;re <strong>switching projects</strong> mid-day and need to stash state before context-switching</li>
+<li>You just <strong>figured something out the hard way</strong> and want the learning to persist across sessions, not die in a closed window</li>
+<li>You want handoff writing to <strong>happen in the background</strong> while you respond to Slack, not block your terminal</li>
+<li>You follow the <strong>&quot;read HANDOFF.md on session start&quot;</strong> pattern and need something writing to it consistently</li>
+</ul>
+<h2>What you say to Claude</h2>
+<pre><code>/handoff
+</code></pre>
+<p>Or, if you want to explicitly capture a specific learning:</p>
+<pre><code>/handoff &quot;Stripe subscription.updated fires twice on prorated plan changes
+— always dedupe by (subscription_id, updated_at)&quot;
+</code></pre>
+<p>Claude launches a background sub-agent, immediately confirms with <em>&quot;Handoff agent launched in background&quot;</em>, and you can keep working or end the session. The agent runs <code>git log</code>, <code>git status</code>, <code>git diff --stat</code>, synthesizes what happened, and writes both files silently.</p>
+<h2>Install</h2>
+<pre><code class="language-bash"># From the claude-toolkit repo
+./install.sh --skills handoff             # into current project
+./install.sh --global --skills handoff    # into ~/.claude (all projects)
+</code></pre>
+<p>After install, <code>/handoff</code> is available as a slash command. Claude also auto-invokes it when you say <em>&quot;wrap up&quot;</em>, <em>&quot;end session&quot;</em>, or <em>&quot;stash this for later&quot;</em>.</p>
+<p>New to skills? See the <a href="../../README.md#what-is-a-skill">main README</a> for a one-minute primer.</p>
+<h2>What you&#39;ll see</h2>
+<p>Two files in <code>/agent/</code>:</p>
+<ul>
+<li><strong><code>HANDOFF.md</code></strong> — point-in-time snapshot, <strong>overwritten each run</strong>. Branch, git status, summary, what was done, what remains, known issues, key decisions, relevant files, free-form context for the next session.</li>
+<li><strong><code>MEMORY.md</code></strong> — <strong>append-only</strong> log of durable learnings, grouped by date. Never rewrites past entries; only appends under today&#39;s header if something non-obvious was learned.</li>
+<li><strong>Background execution</strong> — main chat never blocks. You get an immediate confirmation and a quiet completion message when the sub-agent finishes.</li>
+<li><strong>Works outside git repos</strong> — skips git commands gracefully and writes what it can.</li>
+</ul>
+<h2>Why background</h2>
+<p>Session-end should be fast. Running the full handoff — reading git state, scanning recent commits, synthesizing a summary — inline would force you to wait 10-30 seconds before you could type &quot;bye&quot; and close the tab. A single background sub-agent does both the note and the snapshot sequentially (one agent, not two, to avoid race conditions on <code>MEMORY.md</code>) while you&#39;re free to do anything else.</p>
+<h2>See also</h2>
+<ul>
+<li><a href="../../skills/prd/README.md"><code>prd</code></a> — write the PRD at the start of the feature, write the handoff at the end of the session that implements it</li>
+<li><a href="../../skills/init/README.md"><code>init</code></a> — bootstraps <code>/agent/</code> and the HANDOFF-on-session-start pattern in a new project</li>
+</ul>
+</div>
+      </div>
+    </div>
+    <div class="feedback-area">
+      <label>Feedback on <code>handoff</code> README <span class="viewport-badge">desktop</span></label>
+      <textarea id="fb-handoff" placeholder="What would you change about this README? Tone, missing info, unclear sections, wrong screenshot, etc."></textarea>
+      <div class="char-count"></div>
+    </div>
+  </div>
+  <div class="section-divider"></div>
+
+  <div class="mockup-section" data-section-id="ralph" id="ralph">
+    <span class="section-label">Planning & documents — ralph</span>
+    <div class="version-container">
+      <div class="version active" data-version="1">
+        <div class="readme-content"><h1>ralph</h1>
+<blockquote>
+<p>Convert an existing PRD into the <code>prd.json</code> format the Ralph autonomous agent loop runs on — with dependency-ordered stories small enough to each fit in one Amp context window.</p>
+</blockquote>
+<p><img src="../../skills/ralph/assets/hero.png" alt="ralph hero — syntax-highlighted prd.json in a VS Code dark editor with userStories, acceptanceCriteria, and priority fields"></p>
+<h2>Use this when...</h2>
+<ul>
+<li>You have a PRD <strong>already written</strong> (from the <code>prd</code> skill or anywhere else) and need it in Ralph&#39;s JSON schema before kicking off a run</li>
+<li>You want to <strong>split a big feature</strong> into iterations that each fit in a single context window, instead of watching Ralph run out of tokens mid-story</li>
+<li>You need to <strong>enforce dependency ordering</strong> — schema before backend, backend before UI, dashboards last</li>
+<li>You want every story to automatically carry <strong>&quot;Typecheck passes&quot;</strong> and (for UI work) <strong>&quot;Verify in browser using dev-browser skill&quot;</strong> as final acceptance criteria</li>
+<li>You&#39;re <strong>re-running Ralph</strong> on a different feature and need the previous run archived before overwriting <code>prd.json</code></li>
+</ul>
+<h2>What you say to Claude</h2>
+<pre><code>Convert tasks/prd-task-reminders.md into prd.json for ralph.
+</code></pre>
+<p>Or paste PRD text directly:</p>
+<pre><code>Turn this into ralph format: [paste PRD]
+</code></pre>
+<p>Claude reads the PRD, splits anything too big into per-iteration stories, orders them by dependency, adds the required final criteria, and writes <code>prd.json</code> to your ralph directory. If a previous run exists under a different <code>branchName</code>, it archives it to <code>archive/YYYY-MM-DD-feature-name/</code> first.</p>
+<h2>Install</h2>
+<pre><code class="language-bash"># From the claude-toolkit repo
+./install.sh --skills ralph             # into current project
+./install.sh --global --skills ralph    # into ~/.claude (all projects)
+</code></pre>
+<p>After install, Claude auto-invokes on phrases like <em>&quot;convert this PRD&quot;</em>, <em>&quot;turn this into ralph format&quot;</em>, or <em>&quot;create prd.json from this&quot;</em>.</p>
+<p>New to skills? See the <a href="../../README.md#what-is-a-skill">main README</a> for a one-minute primer.</p>
+<h2>What you&#39;ll see</h2>
+<p>A valid <code>prd.json</code> that drops straight into your Ralph workflow:</p>
+<ul>
+<li><strong>Sequential story IDs</strong> (<code>US-001</code>, <code>US-002</code>, ...) with <code>priority</code> matching dependency order</li>
+<li><strong>Stories small enough for one iteration</strong> — rule of thumb: if it can&#39;t be described in 2-3 sentences, it&#39;s too big and gets split</li>
+<li><strong>Verifiable acceptance criteria</strong> — no &quot;works correctly&quot;, only things Ralph can actually check</li>
+<li><strong>Auto-appended final criteria</strong> — <code>&quot;Typecheck passes&quot;</code> on every story, <code>&quot;Verify in browser using dev-browser skill&quot;</code> on UI stories</li>
+<li><strong><code>passes: false</code> and empty <code>notes</code></strong> on every story so Ralph starts fresh</li>
+</ul>
+<h2>The number one rule</h2>
+<p><strong>Each story must be completable in one Ralph iteration.</strong> Ralph spawns a fresh Amp instance per iteration with no memory of previous work — if a story is too big, the LLM runs out of context mid-implementation and produces broken code. The skill errs aggressively on the side of splitting: &quot;Add authentication&quot; becomes six stories (schema, middleware, login UI, session, logout, password reset), not one.</p>
+<h2>See also</h2>
+<ul>
+<li><a href="../../skills/prd/README.md"><code>prd</code></a> — writes the upstream PRD this skill consumes, with user stories already in the right shape</li>
+<li><a href="../../skills/handoff/README.md"><code>handoff</code></a> — capture learnings between Ralph runs so the next iteration doesn&#39;t repeat the same mistakes</li>
+</ul>
+</div>
+      </div>
+    </div>
+    <div class="feedback-area">
+      <label>Feedback on <code>ralph</code> README <span class="viewport-badge">desktop</span></label>
+      <textarea id="fb-ralph" placeholder="What would you change about this README? Tone, missing info, unclear sections, wrong screenshot, etc."></textarea>
+      <div class="char-count"></div>
+    </div>
+  </div>
+  <div class="section-divider"></div>
+
+  <div class="mockup-section" data-section-id="html-report" id="html-report">
+    <span class="section-label">Reporting & setup — html-report</span>
+    <div class="version-container">
+      <div class="version active" data-version="1">
+        <div class="readme-content"><h1>html-report</h1>
+<blockquote>
+<p>Turn research, analysis, or session findings into a polished editorial-style HTML report — Newsreader serif, inline links, dropcap lead, pull quotes — saved to <code>~/Documents/Claude Reports/</code>.</p>
+</blockquote>
+<p><img src="../../skills/html-report/assets/hero.png" alt="html-report hero — editorial-style report with kicker, headline, subtitle, byline, and dropcap lead paragraph"></p>
+<h2>Use this when...</h2>
+<ul>
+<li>You just finished a <strong>research run, competitive analysis, or architecture review</strong> and want it to read like a real article, not a markdown dump</li>
+<li>You need to <strong>share findings with a non-technical stakeholder</strong> who won&#39;t open a <code>.md</code> file</li>
+<li>You want a report that lives <strong>outside any git repo</strong> — discoverable in Finder, indexed by Spotlight, never accidentally committed</li>
+<li>You want <strong>every tool, product, and video mentioned to be a clickable link</strong>, not a bare footnote at the bottom</li>
+<li>You want the option to <strong>reroll the visual theme</strong> (<code>--fresh</code>) so every report doesn&#39;t look identical</li>
+</ul>
+<h2>What you say to Claude</h2>
+<pre><code>Write this up as an html report — &quot;The State of Vector Databases for RAG in 2026&quot;
+</code></pre>
+<p>Claude parses the research already in the session (or reads a markdown file you pass in), extracts the structure — executive summary, findings, recommendations, sources — and writes a self-contained HTML file to <code>~/Documents/Claude Reports/vector-databases-rag-2026-04-09.html</code>, then opens it in your browser. Pass <code>--fresh</code> to randomize the typography, color palette, and layout.</p>
+<h2>Install</h2>
+<pre><code class="language-bash"># From the claude-toolkit repo
+./install.sh --skills html-report             # into current project
+./install.sh --global --skills html-report    # into ~/.claude (all projects)
+</code></pre>
+<p>After install, Claude invokes this skill automatically when you ask for a &quot;report&quot;, &quot;write-up&quot;, or &quot;summary page&quot; — and it chains naturally after <code>/research-orchestrator</code> or <code>/last30days</code>. You can also trigger it explicitly with <code>/html-report</code>.</p>
+<p>New to skills? See the <a href="../../README.md#what-is-a-skill">main README</a> for a one-minute primer.</p>
+<h2>What you&#39;ll see</h2>
+<p>The generated HTML file is fully self-contained (Google Fonts only, no JS dependencies) and includes:</p>
+<ul>
+<li><strong>Editorial masthead</strong> with kicker, headline, italic subtitle, byline, and date</li>
+<li><strong>Dropcap lead paragraph</strong> followed by prose in 20px Newsreader serif at a 680px column</li>
+<li><strong>Numbered findings</strong> with HIGH / MEDIUM confidence tags and a pull quote for the strongest insight</li>
+<li><strong>Inline links on every tool, product, and video</strong> — no &quot;Sources&quot; section at the bottom, every reference is contextual</li>
+<li><strong>Components that appear only if the content needs them</strong> — decision matrices, cost cards, roadmap timelines, recommendation grids</li>
+</ul>
+<h2>The two modes</h2>
+<p><strong>Default editorial</strong> — warm off-white background, deep red accent, Newsreader serif headlines, Inter for labels. Every report looks like it came out of the same publication.</p>
+<p><strong><code>--fresh</code> theme system</strong> — on every invocation, Claude picks one option from each of five pools (font pairing, color palette, layout mode, background treatment, component styling) seeded by the date and title. The content structure stays identical; the &quot;outfit&quot; changes. Useful when you&#39;re generating several reports and want them to feel distinct at a glance.</p>
+<h2>See also</h2>
+<ul>
+<li><a href="../../skills/research-orchestrator/README.md"><code>research-orchestrator</code></a> — the upstream skill that produces the structured findings this report renders</li>
+<li><a href="../last30days/README.md"><code>last30days</code></a> — another upstream skill; its multi-source synthesis output pipes directly into <code>/html-report</code></li>
+</ul>
+</div>
+      </div>
+    </div>
+    <div class="feedback-area">
+      <label>Feedback on <code>html-report</code> README <span class="viewport-badge">desktop</span></label>
+      <textarea id="fb-html-report" placeholder="What would you change about this README? Tone, missing info, unclear sections, wrong screenshot, etc."></textarea>
+      <div class="char-count"></div>
+    </div>
+  </div>
+  <div class="section-divider"></div>
+
+  <div class="mockup-section" data-section-id="video-course-site" id="video-course-site">
+    <span class="section-label">Reporting & setup — video-course-site</span>
+    <div class="version-container">
+      <div class="version active" data-version="1">
+        <div class="readme-content"><h1>video-course-site</h1>
+<blockquote>
+<p>Turn a folder of video lectures into a readable, tabbed static site where each video becomes a blog post in the teacher&#39;s own voice.</p>
+</blockquote>
+<p><img src="../../skills/video-course-site/assets/hero.png" alt="video-course-site hero — tabbed course site with sidebar lesson nav and a lesson page showing a play-video button and teaching copy"></p>
+<h2>Use this when...</h2>
+<ul>
+<li>You&#39;re sitting on <strong>hours of recorded course videos</strong> and want something readable people can skim, not just play</li>
+<li>You&#39;re a teacher or student who wants each lesson as a <strong>blog post in the teacher&#39;s first-person voice</strong>, not a cold summary</li>
+<li>You need <strong>Q&amp;A and guided meditations pulled out as their own sections</strong>, with timestamps back to the video</li>
+<li>You want a <strong>single-file static site</strong> you can drop in Dropbox, email, or host anywhere — no build step, no CMS</li>
+<li>You want a pipeline that <strong>skips work it&#39;s already done</strong> so you can rerun it on new videos without starting over</li>
+</ul>
+<h2>What you say to Claude</h2>
+<pre><code>I have a folder of course videos at ~/Dropbox/courses/stillness-oct-2025.
+Transcribe them, turn each one into a blog post in the teacher&#39;s voice,
+and assemble a tabbed site I can share.
+</code></pre>
+<p>Claude runs the three-step pipeline — transcribe with whisper.cpp, dispatch one agent per transcript to write a blog post, assemble into <code>&lt;folder&gt;/site/index.html</code> with sidebar tab nav and Medium-style typography. Open the file and share it.</p>
+<h2>Install</h2>
+<pre><code class="language-bash"># From the claude-toolkit repo
+./install.sh --skills video-course-site             # into current project
+./install.sh --global --skills video-course-site    # into ~/.claude (all projects)
+</code></pre>
+<p>After install, Claude will invoke this skill automatically when you mention &quot;course site&quot;, &quot;transcribe videos&quot;, &quot;video to blog&quot;, or &quot;turn these lectures into posts&quot;. New to skills? See the <a href="../../README.md#what-is-a-skill">main README</a> for a one-minute primer.</p>
+<p><strong>Requires:</strong> <code>ffmpeg</code> (<code>brew install ffmpeg</code>), <code>whisper.cpp</code> (<code>brew install whisper-cpp</code>), and the large-v3-turbo model downloaded to <code>~/whisper-models/ggml-large-v3-turbo.bin</code>. Transcription runs locally — no API keys.</p>
+<h2>What you&#39;ll see</h2>
+<ul>
+<li><strong>Sidebar lesson nav</strong> — numbered tabs (01, 02, 03...) switch between lessons in-place</li>
+<li><strong>Per-lesson blog post</strong> — written in the teacher&#39;s first-person voice, not a summary</li>
+<li><strong>Pulled-out Q&amp;A blockquotes</strong> — student questions in bold, teacher answers inline</li>
+<li><strong>Meditation markers</strong> — guided meditations transcribed with timestamps back to the source video</li>
+<li><strong>Idempotent reruns</strong> — skip already-transcribed videos and already-written posts; add a new video and rerun</li>
+</ul>
+<h2>The three-step pipeline</h2>
+<p><strong>Step 1 — Transcribe.</strong> <code>scripts/transcribe_videos.py</code> extracts audio via ffmpeg, runs whisper.cpp, and writes <code>.json</code>/<code>.srt</code>/<code>.txt</code> into <code>&lt;folder&gt;/transcripts/</code>. Long jobs can run backgrounded with <code>nohup caffeinate</code>.</p>
+<p><strong>Step 2 — Generate posts in parallel.</strong> Claude dispatches one agent per transcript. Each agent reads the <code>.txt</code>, writes an HTML fragment (<code>&lt;h2&gt;</code> title, <code>&lt;h3&gt;</code> sections, <code>&lt;blockquote&gt;</code> for Q&amp;A, <code>meditation-marker</code> divs) to a local staging dir. If your source is in Dropbox, posts stage locally first so smart-sync can&#39;t dehydrate them to 0 bytes.</p>
+<p><strong>Step 3 — Assemble.</strong> <code>scripts/assemble_site.py</code> reads every <code>.html</code> fragment, builds the tab nav, and writes the final single-file <code>site/index.html</code>.</p>
+<h2>See also</h2>
+<ul>
+<li><a href="../../skills/ux-mockup/README.md"><code>ux-mockup</code></a> — same self-contained HTML pattern, but for iterating on designs with stakeholder feedback</li>
+<li><a href="../../skills/insight-harness/README.md"><code>insight-harness</code></a> — another &quot;one HTML file is the deliverable&quot; skill, pointed at your own Claude Code usage data</li>
+</ul>
+</div>
+      </div>
+    </div>
+    <div class="feedback-area">
+      <label>Feedback on <code>video-course-site</code> README <span class="viewport-badge">desktop</span></label>
+      <textarea id="fb-video-course-site" placeholder="What would you change about this README? Tone, missing info, unclear sections, wrong screenshot, etc."></textarea>
+      <div class="char-count"></div>
+    </div>
+  </div>
+  <div class="section-divider"></div>
+
+  <div class="mockup-section" data-section-id="insight-harness" id="insight-harness">
+    <span class="section-label">Reporting & setup — insight-harness</span>
+    <div class="version-container">
+      <div class="version active" data-version="1">
+        <div class="readme-content"><h1>insight-harness</h1>
+<blockquote>
+<p>Generate a single-file HTML report of your Claude Code harness — skills, hooks, tool usage, token spend, and workflow patterns across the last 30 days.</p>
+</blockquote>
+<p><img src="../../skills/insight-harness/assets/hero.png" alt="insight-harness hero — dashboard with tool-call, token-usage, top-skill, and hooks-fired stat cards above a skills table and tool-usage bar chart"></p>
+<h2>Use this when...</h2>
+<ul>
+<li>You&#39;re curious <strong>which skills you actually invoke</strong> vs. the ones sitting dormant in <code>~/.claude/skills/</code></li>
+<li>You want to see your <strong>token spend and tool-usage breakdown</strong> without digging through raw JSONL session logs</li>
+<li>You&#39;re tuning your harness and want to know <strong>which hooks fire most</strong> and how often</li>
+<li>You want a <strong>superset of <code>/insights</code></strong> — same stats plus skills, hooks, plugins, MCP servers, and workflow phase transitions</li>
+<li>You want a shareable HTML file you can <strong>upload to insightharness.com</strong> to compare setups with other Claude Code users</li>
+</ul>
+<h2>What you say to Claude</h2>
+<pre><code>Run an insight-harness report on my setup.
+</code></pre>
+<p>Claude runs the extraction script against <code>~/.claude/</code> and opens the generated HTML in your browser. The report lands at <code>~/.claude/usage-data/insight-harness.html</code>. The script uses a strict field whitelist — it never reads tool arguments, message text, tool results, or file paths from your session logs.</p>
+<h2>Install</h2>
+<pre><code class="language-bash"># From the claude-toolkit repo
+./install.sh --skills insight-harness             # into current project
+./install.sh --global --skills insight-harness    # into ~/.claude (all projects)
+</code></pre>
+<p>Or install and run in one line without cloning the repo:</p>
+<pre><code class="language-bash">mkdir -p ~/.claude/skills/insight-harness/scripts &amp;&amp; \
+curl -sL https://raw.githubusercontent.com/craigdossantos/claude-toolkit/main/skills/insight-harness/SKILL.md \
+  -o ~/.claude/skills/insight-harness/SKILL.md &amp;&amp; \
+curl -sL https://raw.githubusercontent.com/craigdossantos/claude-toolkit/main/skills/insight-harness/scripts/extract.py \
+  -o ~/.claude/skills/insight-harness/scripts/extract.py &amp;&amp; \
+open &quot;$(python3 ~/.claude/skills/insight-harness/scripts/extract.py)&quot;
+</code></pre>
+<p>After install, Claude will invoke this skill automatically when you mention &quot;insight harness&quot;, &quot;harness profile&quot;, &quot;my setup&quot;, or &quot;what skills do I use&quot;. New to skills? See the <a href="../../README.md#what-is-a-skill">main README</a> for a one-minute primer.</p>
+<h2>What you&#39;ll see</h2>
+<ul>
+<li><strong>Top-line stat cards</strong> — total tool calls, input/output token usage, top skill by invocation, hooks fired</li>
+<li><strong>Skills by invocation</strong> — which skills you actually reach for, ranked with percent share</li>
+<li><strong>Tool usage breakdown</strong> — Read, Edit, Bash, Grep, Glob, Write with counts</li>
+<li><strong>Workflow phase distribution</strong> — exploration, implementation, testing, shipping, orchestration across sessions</li>
+<li><strong>Phase and tool transitions</strong> — most common sequences (e.g. <code>Read -&gt; Edit</code>, <code>exploration -&gt; implementation</code>) with &quot;test-before-ship&quot; discipline stats</li>
+<li><strong>Full inventory</strong> — installed plugins, configured hooks, MCP servers, permission modes, models used</li>
+</ul>
+<h2>See also</h2>
+<ul>
+<li><a href="../../skills/ux-mockup/README.md"><code>ux-mockup</code></a> — another &quot;the deliverable is one HTML file&quot; skill, for stakeholder design review</li>
+<li><a href="../../skills/video-course-site/README.md"><code>video-course-site</code></a> — a third HTML-as-output skill, for turning course videos into a readable static site</li>
+</ul>
+</div>
+      </div>
+    </div>
+    <div class="feedback-area">
+      <label>Feedback on <code>insight-harness</code> README <span class="viewport-badge">desktop</span></label>
+      <textarea id="fb-insight-harness" placeholder="What would you change about this README? Tone, missing info, unclear sections, wrong screenshot, etc."></textarea>
+      <div class="char-count"></div>
+    </div>
+  </div>
+  <div class="section-divider"></div>
+
+  <div class="mockup-section" data-section-id="init" id="init">
+    <span class="section-label">Reporting & setup — init</span>
+    <div class="version-container">
+      <div class="version active" data-version="1">
+        <div class="readme-content"><h1>init</h1>
+<blockquote>
+<p>One-shot project bootstrap that wires up the frontend-design skill, the skill-creation tools, and an <code>/agent/</code> scaffold — a setup ritual, not an artifact generator.</p>
+</blockquote>
+<p><strong>What this sets up:</strong></p>
+<ol>
+<li><strong>Frontend-design skill enabled</strong> for distinctive, production-grade UI work with a real aesthetic point of view</li>
+<li><strong>Skill-creation tools wired up</strong> so you can author project-specific skills in <code>.claude/skills/</code> without Googling the frontmatter</li>
+<li><strong><code>/agent/</code> scaffold</strong> for the HANDOFF / MEMORY / WORKFLOWS pattern used by other toolkit skills</li>
+<li><strong>Optional extras</strong> — additional toolkit skills, hooks, project-specific slash commands, all offered interactively</li>
+</ol>
+<h2>Use this when...</h2>
+<ul>
+<li>You&#39;re <strong>starting a new project</strong> and want AI-powered dev tooling available from commit #1 instead of bolting it on later</li>
+<li>You just <strong>cloned a repo that doesn&#39;t have <code>.claude/</code></strong> yet and want the standard setup applied in one step</li>
+<li>You want <strong>frontend-design active by default</strong> so &quot;build me a landing page&quot; produces real design, not generic AI slop</li>
+<li>You need the <strong><code>/agent/</code> directory pattern</strong> (HANDOFF.md, MEMORY.md, WORKFLOWS.md) ready to go before your first session</li>
+<li>You&#39;re onboarding a teammate and want them running <strong>the same setup you have</strong>, not a guess-and-check approximation</li>
+</ul>
+<h2>What you say to Claude</h2>
+<pre><code>/init
+</code></pre>
+<p>Claude asks a few questions — <em>&quot;What kind of project is this? Do you need frontend design capabilities? Do you want to create custom skills?&quot;</em> — and then enables the relevant skills, creates the <code>.claude/</code> directory structure, and tells you what was installed. Re-running <code>/init</code> later is safe and only adds new capabilities.</p>
+<h2>Install</h2>
+<pre><code class="language-bash"># From the claude-toolkit repo
+./install.sh --skills init             # into current project
+./install.sh --global --skills init    # into ~/.claude (all projects)
+</code></pre>
+<p>After install, <code>/init</code> is available as a slash command. Unlike most skills, init is rarely auto-invoked — it&#39;s deliberately a user-triggered ritual you run once at project start.</p>
+<p>New to skills? See the <a href="../../README.md#what-is-a-skill">main README</a> for a one-minute primer.</p>
+<h2>What you&#39;ll see</h2>
+<p>Init is a <strong>setup ritual with no artifact</strong> — no file gets &quot;generated&quot; the way <code>prd</code> or <code>handoff</code> produce a markdown file. Instead:</p>
+<ul>
+<li><strong><code>.claude/</code> directory</strong> created with the requested skills wired in</li>
+<li><strong><code>/agent/</code> scaffold</strong> ready for the HANDOFF / MEMORY / WORKFLOWS pattern</li>
+<li><strong>Confirmation of what&#39;s enabled</strong> — a short summary of skills active in this project</li>
+<li><strong>Recommended next steps</strong> — &quot;try <code>create a landing page for X</code>&quot; or &quot;run <code>/handoff</code> at the end of your session&quot;</li>
+</ul>
+<p>The goal is that after <code>/init</code>, you can immediately say <em>&quot;build me the dashboard&quot;</em> or <em>&quot;create a PRD for notifications&quot;</em> and everything just works.</p>
+<h2>Why no hero image</h2>
+<p>Every other skill in the toolkit produces something visual you can screenshot — a mockup, a PRD, a QA checklist. Init produces a <strong>project setup</strong>, which is invisible by design. The whole point is that when you&#39;re done, nothing changed in the UI — you just have more tools available in the chat. A screenshot of an empty <code>.claude/</code> directory would be misleading.</p>
+<h2>See also</h2>
+<ul>
+<li><a href="../../skills/prd/README.md"><code>prd</code></a> — the first thing to reach for after init when starting a new feature</li>
+<li><a href="../../skills/handoff/README.md"><code>handoff</code></a> — pairs with init&#39;s <code>/agent/</code> scaffold to write the end-of-session snapshot</li>
+</ul>
+</div>
+      </div>
+    </div>
+    <div class="feedback-area">
+      <label>Feedback on <code>init</code> README <span class="viewport-badge">desktop</span></label>
+      <textarea id="fb-init" placeholder="What would you change about this README? Tone, missing info, unclear sections, wrong screenshot, etc."></textarea>
+      <div class="char-count"></div>
+    </div>
+  </div>
+  <div class="section-divider"></div>
+
+    <div style="height: 80px"></div>
+
+    <script>
+      // ── Viewport Toggle ──
+      function initViewportToggle() {
+        const buttons = document.querySelectorAll(".viewport-toggle button");
+        buttons.forEach((btn) => {
+          btn.addEventListener("click", () => {
+            const viewport = btn.dataset.viewport;
+            // Update button states
+            buttons.forEach((b) => b.classList.remove("active"));
+            btn.classList.add("active");
+            // Update body class
+            document.body.classList.remove(
+              "viewport-mobile",
+              "viewport-desktop",
+            );
+            document.body.classList.add(`viewport-${viewport}`);
+            // Update viewport badges in feedback areas
+            document.querySelectorAll(".viewport-badge").forEach((badge) => {
+              badge.textContent = viewport;
+            });
+          });
+        });
+      }
+      initViewportToggle();
+
+      // ── Version History ──
+      function initVersionNav() {
+        document.querySelectorAll(".mockup-section").forEach((section) => {
+          const versions = section.querySelectorAll(".version");
+          const nav = section.querySelector(".version-nav");
+          if (!nav || versions.length <= 1) return;
+
+          nav.classList.add("visible");
+          const label = nav.querySelector(".version-label");
+          const prevBtn = nav.querySelector('[data-dir="prev"]');
+          const nextBtn = nav.querySelector('[data-dir="next"]');
+
+          let current = 1; // start on v1 (entry state)
+
+          function show(idx) {
+            versions.forEach((v) => v.classList.remove("active"));
+            versions[idx - 1].classList.add("active");
+            current = idx;
+            label.textContent = `v${idx} of ${versions.length}`;
+            prevBtn.disabled = idx <= 1;
+            nextBtn.disabled = idx >= versions.length;
+          }
+
+          prevBtn.addEventListener("click", () => {
+            if (current > 1) show(current - 1);
+          });
+          nextBtn.addEventListener("click", () => {
+            if (current < versions.length) show(current + 1);
+          });
+
+          show(1); // default to v1 (entry state)
+        });
+      }
+
+      // ── Show first/only version for sections without nav ──
+      document.querySelectorAll(".mockup-section").forEach((section) => {
+        const versions = section.querySelectorAll(".version");
+        if (versions.length === 1) {
+          versions[0].classList.add("active");
+        }
+      });
+
+      initVersionNav();
+
+      // ── Copy All Feedback ──
+      function copyAllFeedback() {
+        const feedback = {};
+        const currentViewport = document.body.classList.contains(
+          "viewport-mobile",
+        )
+          ? "mobile"
+          : "desktop";
+
+        document.querySelectorAll(".mockup-section").forEach((section) => {
+          const id = section.dataset.sectionId;
+          const textarea = section.querySelector("textarea");
+          if (textarea && textarea.value.trim()) {
+            const versions = section.querySelectorAll(".version");
+            const activeVersion = section.querySelector(".version.active");
+            const versionNum = activeVersion
+              ? activeVersion.dataset.version
+              : "1";
+            feedback[id] = {
+              feedback: textarea.value.trim(),
+              viewing_version: parseInt(versionNum),
+              total_versions: versions.length,
+              viewport: currentViewport,
+            };
+          }
+        });
+
+        if (Object.keys(feedback).length === 0) {
+          alert("No feedback entered yet. Type in the text areas first.");
+          return;
+        }
+
+        const json = JSON.stringify(
+          {
+            mockup: document.title,
+            timestamp: new Date().toISOString(),
+            viewport: currentViewport,
+            sections: feedback,
+          },
+          null,
+          2,
+        );
+
+        navigator.clipboard.writeText(json).then(() => {
+          const btn = document.querySelector(".copy-all-btn");
+          btn.textContent = "Copied!";
+          btn.classList.add("copied");
+          setTimeout(() => {
+            btn.textContent = "Copy All Feedback";
+            btn.classList.remove("copied");
+          }, 2000);
+        });
+      }
+
+      // ── Textarea char counts ──
+      document.querySelectorAll(".feedback-area textarea").forEach((ta) => {
+        const counter = ta.parentElement.querySelector(".char-count");
+        if (!counter) return;
+        ta.addEventListener("input", () => {
+          counter.textContent = ta.value.length
+            ? `${ta.value.length} chars`
+            : "";
+        });
+      });
+    </script>
+  </body>
+</html>
