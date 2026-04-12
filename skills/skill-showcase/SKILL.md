@@ -7,7 +7,7 @@ description: Build a single-file public HTML showcase of a collection of Claude 
 
 Assemble a single self-contained HTML page that presents a collection of skill READMEs as a public-facing gallery. The output is static, offline-capable, and sanitized of personal identifying information — suitable for publishing, sharing as a portfolio, or embedding in documentation.
 
-This skill does **not** generate README content or screenshots. It assumes each skill already has a `README.md` and (optionally) an `assets/hero.png` or `assets/hero.jpg`. If READMEs don't exist yet, tell the user to create them first.
+This skill **drafts human-facing READMEs in memory** for any skill that lacks one (see "Drafting READMEs" below) — the runtime skill folders are never modified. It does **not** generate hero images. Skills without an `assets/hero.png` still render cleanly, just without the hero panel; generate heroes separately with an image-gen skill if you want them.
 
 ## Workflow
 
@@ -23,15 +23,17 @@ This skill does **not** generate README content or screenshots. It assumes each 
    - Check for `assets/hero.png` or `assets/hero.jpg`
    - Classify as **custom** or **plugin** based on path (see below)
 
-3. **Categorize** — group skills by the category hints in their READMEs or by user-provided grouping. Common categories: Design & UX, Testing & QA, Multi-agent thinking, Planning & documents, Reporting & setup, Meta / Infrastructure. If a skill doesn't fit, put it in "Uncategorized" and ask the user to confirm.
+3. **Draft READMEs for skills that lack one** — see "Drafting READMEs" below. A showcase built against a user's `~/.claude/skills/` often finds most skills have no public README (the SKILL.md is written for Claude, not humans). For each such skill, draft a README in memory, then pass the drafts to the build script via `--readme-overrides`. Skills that already have a README are left alone — the author's words win.
 
-4. **Scrub PII** — scan README content and replace personal identifiers (see PII Scrubbing below).
+4. **Categorize** — group skills by the category hints in their READMEs or by user-provided grouping. Common categories: Design & UX, Testing & QA, Multi-agent thinking, Planning & documents, Reporting & setup, Meta / Infrastructure. If a skill doesn't fit, put it in "Uncategorized" and ask the user to confirm.
 
-5. **Assemble the HTML page** — use `assets/showcase-shell.html` as the structural template. The shell provides the sticky nav, table of contents, section layout, and styles. Inject rendered README content and hero images.
+5. **Scrub PII** — scan README content and replace personal identifiers (see PII Scrubbing below).
 
-6. **Write output** — save to `docs/showcase/skills.html` by default (or a user-specified path).
+6. **Assemble the HTML page** — use `assets/showcase-shell.html` as the structural template. The shell provides the sticky nav, table of contents, section layout, and styles. Inject rendered README content and hero images.
 
-7. **Open in browser** — run `open <path>` so the user can review.
+7. **Write output** — save to `~/.claude/showcase/skills-<YYYY-MM-DD>.html` by default. Never dump files into the user's current working directory. If the user is running this skill from an unrelated repo, we do not want to create `docs/showcase/` folders they didn't ask for. Only write to cwd when the user explicitly passes `--output <path>`.
+
+8. **Open in browser** — run `open <path>` so the user can review.
 
 ## Custom vs plugin classification
 
@@ -66,6 +68,85 @@ Also inspect hero image filenames and paths. **Do not OCR-scrub hero images** �
 
 Before writing the final HTML, do a sanity grep of the assembled output for the detected identifiers and warn if any slipped through.
 
+## Drafting READMEs for skills that lack one
+
+Most skills in `~/.claude/skills/` only have a `SKILL.md` — written for Claude, not humans. Rendered in the showcase raw, that content looks like technical instructions, not a description. To give third-party users a decent showcase without requiring them to author READMEs first, **draft a human-facing README from each skill's full SKILL.md in memory** before invoking the build script.
+
+### When to draft
+
+For each skill:
+
+1. If `README.md` exists on disk → **use it as-is**, do not draft. The author's words always win.
+2. If no `README.md` → draft one in memory from the full SKILL.md. Do **not** write it to the skill folder. The showcase should not modify the user's skills directory.
+
+If the user passes `--no-draft-missing` (via a user-facing instruction like "don't generate READMEs, just show what's there"), skip drafting entirely and let those skills render with the "No public README yet" stub.
+
+### What to use as input
+
+Read the **entire** SKILL.md (frontmatter + body), not just the frontmatter. Frontmatter alone produces generic boilerplate. The SKILL.md body has the actual workflow, examples, rules, and tone that make for a useful README.
+
+Also glance at the skill folder for grounding details:
+
+- `scripts/` filenames — hint at what commands the skill runs
+- `fixtures/` or `examples/` — source of example prompts
+- Any sibling `*.md` files worth referencing
+
+### Target style
+
+Match the style of the existing well-authored READMEs in `~/Coding/claude-toolkit/skills/` (use one as a reference if accessible). The shape is:
+
+```markdown
+# <skill-id>
+
+> One-sentence tagline — what the skill does and why it matters in one line.
+
+## Use this when...
+
+- Specific situation 1 where the skill applies (bold the keyword, explain the pain)
+- Specific situation 2
+- 3–5 bullets total; each names a concrete scenario
+
+## What you say to Claude
+
+\`\`\`
+Example of a natural-language invocation that would trigger this skill.
+Include a realistic constraint or input so the example feels grounded.
+\`\`\`
+
+Short paragraph explaining what happens next — which tools or sub-skills Claude runs, what output the user gets.
+
+## What you get back
+
+Description of the output artifact(s), with a specific, concrete example.
+```
+
+Optional sections if the SKILL.md supports them: **Install**, **Requirements**, **Limits**, **See also**.
+
+### Rules
+
+- **Length:** 40–80 lines of markdown. Shorter than SKILL.md (which is 150–300 lines). A README is a marketing distillation, not a re-paste.
+- **Tagline voice:** active, specific, no hedging. Good: "Spawn 10 parallel agents with distinct framings and surface the Mode plus Outliers." Bad: "A flexible skill that can help you with various brainstorming tasks."
+- **No generic filler:** never write "This powerful skill helps you..." or "Designed to be easy to use." If you can't say something specific, omit the section.
+- **Preserve technical accuracy:** if SKILL.md says "runs 10 agents," the README says 10, not "several." If it mentions a specific API or tool, name it.
+- **No fabrications:** if SKILL.md doesn't say how install works, don't invent an Install section.
+
+### How to pass drafts to the build script
+
+1. Build a JSON object `{ "<skill-id>": "<markdown text>", ... }` containing only the skills you drafted (skills with existing READMEs stay out of the map).
+2. Write it to a temp file — e.g. `/tmp/skill-showcase-drafts-<timestamp>.json`.
+3. Pass `--readme-overrides /tmp/skill-showcase-drafts-<timestamp>.json` to `build-showcase.js`.
+4. The script fills in any skill whose `README.md` is missing with the draft text. Skills that already have a README ignore the override.
+
+Example invocation:
+
+```bash
+node ~/.claude/skills/skill-showcase/scripts/build-showcase.js \
+  --skills-dir ~/.claude/skills \
+  --readme-overrides /tmp/skill-showcase-drafts.json
+```
+
+The script reports how many READMEs were drafted vs on-disk so the user knows the split.
+
 ## Table of contents
 
 The showcase page has a two-level TOC at the top:
@@ -94,12 +175,14 @@ Skills with no README get a minimal card: name, badge, tagline from SKILL.md des
 
 ## Design constraints for the output page
 
-- **One HTML file**, all CSS inline, all JS inline, no build step, works offline when opened from `file://`
+- **One HTML file, truly portable** — all CSS inline, all JS inline, **hero images and README body images inlined as base64 data URIs by default**. The output is a single file a user can email, drop in Slack, or open from `file://` on a machine that has never seen the source skills. No sibling `skills/` folder required.
+- **Image size cap** — any individual image larger than ~600 kB is skipped rather than inlined, so one giant screenshot in a README can't balloon the showcase past emailable size. Tell the user which images were skipped if any. Users who want oversize heroes can compress them or opt into the non-inlined mode.
 - **No feedback UI** — this is read-only. No textareas, no copy buttons, no forms
 - **No external CDNs except Google Fonts** — fonts via `<link>` in `<head>` are fine
 - **Responsive** — legible at 375px mobile and comfortable at 1400px desktop
-- **Images referenced by relative path** — from `docs/showcase/skills.html`, hero images are at `../../skills/<name>/assets/hero.png`. Do not inline as data URIs (bloats file, slows load)
 - **Accessible** — semantic HTML, sufficient color contrast, alt text on hero images
+
+**When to use `--no-inline-images`:** the original use case was a repo-hosted showcase at `<repo>/docs/showcase/skills.html` sitting next to a `<repo>/skills/` tree. In that case, passing `--no-inline-images` alongside an explicit `--output` writes relative paths (`../../skills/<name>/assets/hero.png`) instead of data URIs, keeping the HTML small and letting the committed asset files serve the images. Only use this mode when the user is publishing a showcase into a repo they own.
 
 ## Invocation
 
@@ -115,7 +198,7 @@ Or with a specific target:
 Build a skill showcase from ~/.claude/skills/ and write it to ./public/skills.html
 ```
 
-Default target directory: `./skills/` relative to the current working directory. Default output path: `docs/showcase/skills.html`.
+Default target directory: `~/.claude/skills/` (the user's global skills collection). Default output path: `~/.claude/showcase/skills-<YYYY-MM-DD>.html`. Images are inlined as base64 data URIs by default so the output is one portable file.
 
 After building, always run `open <output-path>` so the user can review.
 

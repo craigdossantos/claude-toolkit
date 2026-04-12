@@ -24,21 +24,40 @@
  */
 
 const fs = require("fs");
+const os = require("os");
 const path = require("path");
 const { execSync } = require("child_process");
 
 // ─────────────────────────────────────────────
 // Arg parsing
 // ─────────────────────────────────────────────
+function defaultOutputPath() {
+  // User-level default so running this skill never pollutes a third-party's repo.
+  // Individual runs get a dated filename so previous showcases aren't clobbered.
+  const date = new Date().toISOString().slice(0, 10);
+  return path.join(os.homedir(), ".claude", "showcase", `skills-${date}.html`);
+}
+
 function parseArgs(argv) {
   const args = {
-    skillsDir: "./skills",
-    output: "./docs/showcase/skills.html",
+    skillsDir: null, // resolved below
+    output: null, // resolved below
     title: "Claude Code Skills",
     exclude: [],
     groupMap: null,
     baseRepo: null,
     selfTest: false,
+    // Inline hero + body images as base64 data URIs so the output is a single
+    // portable HTML file with no external asset dependencies. Opt out for the
+    // repo-hosted case where the HTML lives next to a skills/ tree and images
+    // should resolve by relative path.
+    inlineImages: true,
+    // Optional JSON file mapping skill-id → markdown string. Used to supply
+    // drafted README content for skills that have no README.md on disk.
+    // Claude (running the skill) drafts these in memory from each skill's
+    // SKILL.md, writes them to a temp JSON file, and passes the path here.
+    // The script itself never calls an LLM — it stays pure transform.
+    readmeOverrides: null,
   };
   for (let i = 2; i < argv.length; i++) {
     const a = argv[i];
@@ -50,8 +69,103 @@ function parseArgs(argv) {
     else if (a === "--group-map") args.groupMap = argv[++i];
     else if (a === "--base-repo") args.baseRepo = argv[++i];
     else if (a === "--self-test") args.selfTest = true;
+    else if (a === "--no-inline-images") args.inlineImages = false;
+    else if (a === "--inline-images") args.inlineImages = true;
+    else if (a === "--readme-overrides") args.readmeOverrides = argv[++i];
   }
+  // Default skills dir: ~/.claude/skills (the user-level skill collection).
+  // Fall back to ./skills only if explicitly requested with --skills-dir.
+  if (!args.skillsDir) {
+    args.skillsDir = path.join(os.homedir(), ".claude", "skills");
+  }
+  if (!args.output) args.output = defaultOutputPath();
   return args;
+}
+
+// ─────────────────────────────────────────────
+// Image → data URI (for --inline-images mode)
+// ─────────────────────────────────────────────
+const MIME_BY_EXT = {
+  ".png": "image/png",
+  ".jpg": "image/jpeg",
+  ".jpeg": "image/jpeg",
+  ".gif": "image/gif",
+  ".webp": "image/webp",
+  ".svg": "image/svg+xml",
+};
+
+// Cap per-image inline size. Base64 is ~33% larger than the raw bytes, so a
+// 600 kB source image becomes ~800 kB in the HTML. A showcase of 20 skills
+// with a single hero each stays under 10 MB even at this cap, which is the
+// upper end of "still shareable by email or chat." Larger images (typically
+// README demo screenshots, not heroes) are skipped with a placeholder.
+const MAX_INLINE_BYTES = 600 * 1024;
+
+// Accumulator for images the build skipped (oversize, missing, unsafe path,
+// unknown extension). Populated by toDataUri and the body-image rewriter;
+// reported at the end of main() so the user knows what was dropped.
+const skippedImages = [];
+
+/**
+ * Encode a local image file as a data URI, or return null with a recorded
+ * skip reason if we refuse for any reason.
+ *
+ * Safety rules:
+ *   - Only known image extensions (MIME_BY_EXT) are accepted. We never fall
+ *     back to application/octet-stream — that would allow a README like
+ *     `[secret](assets/../../../.ssh/id_rsa)` to inline arbitrary files.
+ *   - Size cap (MAX_INLINE_BYTES) unless allowOversize is set. Hero images
+ *     the author deliberately picked are allowed to opt past the cap.
+ *   - SVGs are passed through the text sanitizer so PII that might appear
+ *     as visible text inside the SVG (user names, file paths) gets scrubbed
+ *     before encoding. The final-HTML PII grep cannot see inside base64 or
+ *     url-encoded payloads, so this pre-pass matters.
+ */
+function toDataUri(
+  absPath,
+  { allowOversize = false, piiReplacements = null, context = "image" } = {},
+) {
+  try {
+    const ext = path.extname(absPath).toLowerCase();
+    if (!(ext in MIME_BY_EXT)) {
+      skippedImages.push({
+        path: absPath,
+        reason: `unsupported extension ${ext || "(none)"}`,
+        context,
+      });
+      return null;
+    }
+    const stat = fs.statSync(absPath);
+    if (!allowOversize && stat.size > MAX_INLINE_BYTES) {
+      const kb = Math.round(stat.size / 1024);
+      skippedImages.push({
+        path: absPath,
+        reason: `oversize (${kb}kB > 600kB cap)`,
+        context,
+      });
+      return null;
+    }
+    const mime = MIME_BY_EXT[ext];
+    const buf = fs.readFileSync(absPath);
+    if (ext === ".svg") {
+      let svgText = buf.toString("utf8");
+      if (piiReplacements) {
+        // sanitize() has newline/fence invariants that only apply to markdown.
+        // SVGs are XML — apply replacements directly without those checks.
+        for (const [rx, rep] of piiReplacements)
+          svgText = svgText.replace(rx, rep);
+      }
+      return `data:${mime};utf8,${encodeURIComponent(svgText)}`;
+    }
+    return `data:${mime};base64,${buf.toString("base64")}`;
+  } catch (e) {
+    skippedImages.push({
+      path: absPath,
+      reason: `read failed: ${e.code || e.message}`,
+      context,
+    });
+    return null;
+  }
 }
 
 /**
@@ -281,7 +395,19 @@ function discoverSkills(skillsDir, exclude) {
   const entries = fs.readdirSync(absDir, { withFileTypes: true });
   const skills = [];
   for (const entry of entries) {
-    if (!entry.isDirectory()) continue;
+    // Follow symlinks — a skill may be symlinked into ~/.claude/skills/
+    // from a source-of-truth repo (e.g. claude-toolkit). withFileTypes
+    // returns `isSymbolicLink: true` for symlinks without following them,
+    // so we have to statSync on the resolved path to know if it's a dir.
+    if (!entry.isDirectory()) {
+      if (!entry.isSymbolicLink()) continue;
+      try {
+        const resolved = fs.statSync(path.join(absDir, entry.name));
+        if (!resolved.isDirectory()) continue;
+      } catch (_) {
+        continue; // broken symlink
+      }
+    }
     if (exclude.includes(entry.name)) continue;
     const skillDir = path.join(absDir, entry.name);
     const skillMdPath = path.join(skillDir, "SKILL.md");
@@ -293,24 +419,35 @@ function discoverSkills(skillsDir, exclude) {
     const skillMd = fs.readFileSync(skillMdPath, "utf8");
     const frontmatter = parseFrontmatter(skillMd);
 
-    // Hero image lookup
+    // Hero image lookup — track both absolute path (for inlining) and a
+    // relative path (for the non-inlined, repo-hosted rendering mode).
     const assetsDir = path.join(skillDir, "assets");
+    let heroAbsPath = null;
     let heroRelPath = null;
     if (fs.existsSync(assetsDir)) {
       for (const ext of ["png", "jpg", "jpeg", "webp"]) {
         const candidate = path.join(assetsDir, "hero." + ext);
         if (fs.existsSync(candidate)) {
+          heroAbsPath = candidate;
           heroRelPath = `../../skills/${entry.name}/assets/hero.${ext}`;
           break;
         }
       }
     }
 
-    // Classify custom vs plugin
-    const absPath = skillDir;
+    // Classify custom vs plugin.
+    // Use the realpath so a plugin skill symlinked into ~/.claude/skills/
+    // still gets detected as a plugin (the symlink path wouldn't contain
+    // /plugins/cache/, but the target does).
+    let realSkillDir = skillDir;
+    try {
+      realSkillDir = fs.realpathSync(skillDir);
+    } catch (_) {
+      // Fall back to the original path on any resolution error.
+    }
     const isPlugin =
-      /\/plugins\/cache\//.test(absPath) ||
-      /\/plugins\/installed\//.test(absPath) ||
+      /\/plugins\/cache\//.test(realSkillDir) ||
+      /\/plugins\/installed\//.test(realSkillDir) ||
       (frontmatter.data.source && /plugin/i.test(frontmatter.data.source));
 
     // Tagline: prefer README blockquote, fall back to SKILL.md description
@@ -332,9 +469,11 @@ function discoverSkills(skillsDir, exclude) {
       description: frontmatter.data.description || "",
       readme,
       hasReadme,
-      heroRelPath,
+      skillDir, // absolute path — used to resolve body images for inlining
+      heroAbsPath, // absolute path to hero image (for inlining)
+      heroRelPath, // relative path from the output file (for non-inlined mode)
       isPlugin: !!isPlugin,
-      pluginName: isPlugin ? inferPluginName(absPath) : null,
+      pluginName: isPlugin ? inferPluginName(realSkillDir) : null,
       frontmatter: frontmatter.data,
     });
   }
@@ -413,12 +552,76 @@ function stripHeader(readme) {
 }
 
 // ─────────────────────────────────────────────
-// Rewrite relative image paths so they resolve from the output location
+// Rewrite relative image paths.
+//
+// Two modes:
+//   inline=true  → replace `assets/foo.png` refs with `data:image/...;base64,...`
+//                  so the output is a single portable file. Missing files are
+//                  stripped (leaving an empty src) rather than leaving a
+//                  broken relative link in the output.
+//   inline=false → rewrite to `../../skills/<id>/assets/foo.png` (original
+//                  repo-hosted behavior — the HTML sits next to a skills/ tree).
 // ─────────────────────────────────────────────
-function rewriteImagePaths(html, skillId) {
+function rewriteImagePaths(html, skill, inline, piiReplacements) {
+  if (!inline) {
+    return html.replace(
+      /(src|href)="assets\//g,
+      `$1="../../skills/${skill.id}/assets/`,
+    );
+  }
+
+  // Inline mode: resolve each `assets/<rel>` reference to a data URI.
+  //
+  // SECURITY: a skill README can reference arbitrary markdown like
+  //   ![x](assets/../../../.ssh/id_rsa)
+  // If we blindly path.join() and readFileSync, we'll happily inline any
+  // file on disk under the size cap. Defend by resolving the candidate
+  // and confirming it still lives inside `<skillDir>/assets/`. Use
+  // realpath on both sides so symlinks can't escape either. A malicious
+  // or accidentally-wrong reference gets dropped and recorded in the
+  // skipped list, not silently leaked.
+  let assetsRoot;
+  try {
+    assetsRoot = fs.realpathSync(path.join(skill.skillDir, "assets"));
+  } catch (_) {
+    // No assets/ dir — any `assets/...` ref in the README has nothing to
+    // resolve to. Strip every match and move on.
+    return html.replace(/(src|href)="assets\/[^"]+"/g, '$1=""');
+  }
+
   return html.replace(
-    /(src|href)="assets\//g,
-    `$1="../../skills/${skillId}/assets/`,
+    /(src|href)="assets\/([^"]+)"/g,
+    (match, attr, relPath) => {
+      const candidate = path.join(assetsRoot, relPath);
+      let resolved;
+      try {
+        resolved = fs.realpathSync(candidate);
+      } catch (_) {
+        skippedImages.push({
+          path: candidate,
+          reason: "not found",
+          context: `${skill.id} body`,
+        });
+        return `${attr}=""`;
+      }
+      // Must remain inside assetsRoot. `path.relative` returning ".." or
+      // an absolute path means the symlink/path walked out of the sandbox.
+      const rel = path.relative(assetsRoot, resolved);
+      if (rel.startsWith("..") || path.isAbsolute(rel)) {
+        skippedImages.push({
+          path: resolved,
+          reason: "path escape blocked (references target outside assets/)",
+          context: `${skill.id} body`,
+        });
+        return `${attr}=""`;
+      }
+      const dataUri = toDataUri(resolved, {
+        piiReplacements,
+        context: `${skill.id} body`,
+      });
+      if (!dataUri) return `${attr}=""`;
+      return `${attr}="${dataUri}"`;
+    },
   );
 }
 
@@ -613,6 +816,37 @@ function main() {
     console.error("No skills found in " + args.skillsDir);
     process.exit(1);
   }
+
+  // Apply drafted README overrides. These come from Claude running the skill:
+  // for each skill without a README.md on disk, Claude reads the full SKILL.md
+  // and drafts a human-facing README, then writes the map to a temp JSON and
+  // passes the path via --readme-overrides. The script never calls an LLM.
+  let overrideCount = 0;
+  if (args.readmeOverrides) {
+    let overrides;
+    try {
+      overrides = JSON.parse(fs.readFileSync(args.readmeOverrides, "utf8"));
+    } catch (e) {
+      console.error(
+        `Failed to read --readme-overrides file ${args.readmeOverrides}: ${e.message}`,
+      );
+      process.exit(1);
+    }
+    for (const skill of skills) {
+      // Only fill in READMEs that are missing. Never overwrite an existing
+      // on-disk README — the author's words win over any draft.
+      if (!skill.hasReadme && typeof overrides[skill.id] === "string") {
+        skill.readme = overrides[skill.id];
+        skill.readmeSource = "drafted";
+        overrideCount++;
+        // Re-derive tagline from the drafted README's leading blockquote,
+        // falling back to the SKILL.md description.
+        const bq = skill.readme.match(/^>\s+(.+)$/m);
+        if (bq) skill.tagline = bq[1].trim();
+      }
+    }
+  }
+
   const groups = groupSkills(skills, args.groupMap);
 
   // Build combined content for PII detection (scan everything before sanitizing)
@@ -732,13 +966,31 @@ function main() {
           `${skill.id} (README body)`,
         );
         bodyHtml = marked.parse(sanitized);
-        bodyHtml = rewriteImagePaths(bodyHtml, skill.id);
+        bodyHtml = rewriteImagePaths(
+          bodyHtml,
+          skill,
+          args.inlineImages,
+          replacements,
+        );
       } else {
         bodyHtml = `<div class="no-readme">This skill does not have a public README yet. The instructions inside <code>SKILL.md</code> are written for Claude rather than humans.</div>`;
       }
 
-      const heroHtml = skill.heroRelPath
-        ? `<div class="hero-img-wrap"><img src="${esc(skill.heroRelPath)}" alt="${esc(skill.id)} hero" loading="lazy" /></div>`
+      // Resolve the hero image src. In inline mode the output is one portable
+      // file with no external asset dependencies; otherwise use the relative
+      // path that points back into a sibling skills/ tree. Hero images go
+      // through the same size cap as body images — the contract is uniform.
+      let heroSrc = null;
+      if (args.inlineImages && skill.heroAbsPath) {
+        heroSrc = toDataUri(skill.heroAbsPath, {
+          piiReplacements: replacements,
+          context: `${skill.id} hero`,
+        });
+      } else if (!args.inlineImages && skill.heroRelPath) {
+        heroSrc = skill.heroRelPath;
+      }
+      const heroHtml = heroSrc
+        ? `<div class="hero-img-wrap"><img src="${esc(heroSrc)}" alt="${esc(skill.id)} hero" loading="lazy" /></div>`
         : "";
 
       const repoUrl = repoUrlFor(skill, args.baseRepo);
@@ -858,6 +1110,9 @@ function main() {
   );
   console.log(`  ${Object.keys(groups).length} categories`);
   console.log(`  ${sizeKb}kB`);
+  if (overrideCount > 0) {
+    console.log(`  ${overrideCount} READMEs drafted from SKILL.md`);
+  }
 
   if (leaks.length) {
     console.error("");
@@ -872,6 +1127,19 @@ function main() {
     process.exit(2);
   } else {
     console.log("  ✓ PII check passed");
+  }
+
+  // Report images the build refused to inline. This is the user-visible
+  // half of the SKILL.md promise: any image over the size cap, missing on
+  // disk, using an unsupported extension, or attempting a path escape
+  // gets named here so the user knows what to fix. Silence would let a
+  // broken hero ship without anyone noticing.
+  if (skippedImages.length > 0) {
+    console.log("");
+    console.log(`  ⚠ ${skippedImages.length} image(s) skipped:`);
+    for (const s of skippedImages) {
+      console.log(`    • ${s.context}: ${s.reason} (${s.path})`);
+    }
   }
 }
 
