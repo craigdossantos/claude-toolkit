@@ -31,7 +31,7 @@ HOOKS_DIR = CLAUDE_DIR / "hooks"
 AGENTS_DIR = CLAUDE_DIR / "agents"
 
 DAYS = 30
-VERSION = "2.1.0"  # Keep in sync with SKILL.md frontmatter
+VERSION = "2.3.0"  # Keep in sync with SKILL.md frontmatter
 ENV_ASSIGN = re.compile(r'^([A-Z_][A-Z0-9_]*)=')
 
 
@@ -411,6 +411,11 @@ def extract_jsonl_metadata(cutoff):
     pr_count = 0
     session_count = 0
     total_sessions_scanned = 0
+    total_input_tokens_jsonl = 0
+    total_output_tokens_jsonl = 0
+    total_cache_read_tokens_jsonl = 0
+    total_cache_create_tokens_jsonl = 0
+    pr_urls = set()
 
     # Agent patterns
     agent_count = 0
@@ -485,8 +490,20 @@ def extract_jsonl_metadata(cutoff):
                             assistant_messages += 1
                             msg = d.get("message", {})
                             model = msg.get("model", "")
+                            usage_data = msg.get("usage", {})
+                            # Accumulate 4-way token totals
+                            total_input_tokens_jsonl += usage_data.get("input_tokens", 0)
+                            total_output_tokens_jsonl += usage_data.get("output_tokens", 0)
+                            total_cache_read_tokens_jsonl += usage_data.get("cache_read_input_tokens", 0)
+                            total_cache_create_tokens_jsonl += usage_data.get("cache_creation_input_tokens", 0)
                             if model:
-                                models[model] += 1
+                                model_token_sum = (
+                                    usage_data.get("input_tokens", 0) +
+                                    usage_data.get("output_tokens", 0) +
+                                    usage_data.get("cache_read_input_tokens", 0) +
+                                    usage_data.get("cache_creation_input_tokens", 0)
+                                )
+                                models[model] += model_token_sum
                             for item in msg.get("content", []):
                                 if item.get("type") == "tool_use":
                                     session_had_data = True
@@ -557,12 +574,21 @@ def extract_jsonl_metadata(cutoff):
                                             mcp_servers[parts[1]] += 1
 
                         elif entry_type == "user":
-                            user_messages += 1
+                            # Only count real human prompts, not tool_result envelopes
+                            msg = d.get("message", {})
+                            content = msg.get("content", "")
+                            is_real_prompt = False
+                            if isinstance(content, str):
+                                is_real_prompt = True
+                            elif isinstance(content, list):
+                                non_tool_result = [i for i in content if not (isinstance(i, dict) and i.get("type") == "tool_result")]
+                                if non_tool_result:
+                                    is_real_prompt = True
+                            if is_real_prompt:
+                                user_messages += 1
                             # Reset tool transition tracking on new user turn
                             prev_tool_in_turn = None
                             prev_phase_in_turn = None
-                            msg = d.get("message", {})
-                            content = msg.get("content", "")
                             if isinstance(content, str):
                                 for cmd in cmd_pattern.findall(content):
                                     slash_commands[cmd] += 1
@@ -576,7 +602,11 @@ def extract_jsonl_metadata(cutoff):
                             permission_modes[d.get("permissionMode", "unknown")] += 1
 
                         elif entry_type == "pr-link":
-                            pr_count += 1
+                            pr_url = d.get("url", d.get("prUrl", ""))
+                            if pr_url:
+                                pr_urls.add(pr_url)
+                            else:
+                                pr_urls.add(f"__unknown_{len(pr_urls)}")
 
                         elif entry_type == "system":
                             st = d.get("subtype", "")
@@ -658,7 +688,12 @@ def extract_jsonl_metadata(cutoff):
         "models": dict(models.most_common(10)),
         "versions": dict(versions.most_common(10)),
         "cli_tools": dict(cli_tools.most_common(20)),
-        "pr_count": pr_count,
+        "pr_count": len(pr_urls),
+        "total_input_tokens": total_input_tokens_jsonl,
+        "total_output_tokens": total_output_tokens_jsonl,
+        "total_cache_read_tokens": total_cache_read_tokens_jsonl,
+        "total_cache_create_tokens": total_cache_create_tokens_jsonl,
+        "total_throughput_tokens": (total_input_tokens_jsonl + total_output_tokens_jsonl + total_cache_read_tokens_jsonl + total_cache_create_tokens_jsonl),
         "sessions_scanned": total_sessions_scanned,
         "sessions_with_data": session_count,
         # Agent patterns
@@ -873,14 +908,18 @@ def extract_stats_cache():
             model_tokens[model] = {
                 "input": usage.get("inputTokens", 0),
                 "output": usage.get("outputTokens", 0),
-                "cache_read": usage.get("cacheReadTokens", usage.get("cache_read_input_tokens", 0)),
-                "cache_create": usage.get("cacheCreationTokens", usage.get("cache_creation_input_tokens", 0)),
+                "cache_read": usage.get("cacheReadInputTokens", usage.get("cacheReadTokens", 0)),
+                "cache_create": usage.get("cacheCreationInputTokens", usage.get("cacheCreationTokens", 0)),
             }
 
     # Cache efficiency
     total_cache_read = sum(m.get("cache_read", 0) for m in model_tokens.values())
     total_direct_input = sum(m.get("input", 0) for m in model_tokens.values())
     cache_ratio = round(total_cache_read / total_direct_input) if total_direct_input > 0 else 0
+
+    lifetime_input = sum(m.get("input", 0) for m in model_tokens.values())
+    lifetime_output = sum(m.get("output", 0) for m in model_tokens.values())
+    lifetime_tokens_inout = lifetime_input + lifetime_output
 
     return {
         "peak_day_messages": peak_day.get("messageCount", 0),
@@ -892,6 +931,7 @@ def extract_stats_cache():
         "days_tracked": len(daily),
         "model_tokens": model_tokens,
         "cache_read_ratio": cache_ratio,
+        "lifetime_tokens": lifetime_tokens_inout,
     }
 
 
@@ -1204,12 +1244,14 @@ def extract_permission_accumulation():
 
 # ── Aggregation ────────────────────────────────────────────────────────────
 
+MAX_SESSION_MINUTES = 480
+
 def aggregate_session_meta(sessions):
     if not sessions:
         return {}
     total_tokens_in = sum(s["input_tokens"] for s in sessions)
     total_tokens_out = sum(s["output_tokens"] for s in sessions)
-    total_duration = sum(s["duration_minutes"] for s in sessions)
+    total_duration = sum(min(s["duration_minutes"], MAX_SESSION_MINUTES) for s in sessions)
     all_tools = Counter()
     for s in sessions:
         for t, c in s["tool_counts"].items():
@@ -1221,7 +1263,7 @@ def aggregate_session_meta(sessions):
     uses_task = sum(1 for s in sessions if s["uses_task_agent"])
     uses_mcp = sum(1 for s in sessions if s["uses_mcp"])
     uses_web = sum(1 for s in sessions if s["uses_web_search"])
-    durations = [s["duration_minutes"] for s in sessions if s["duration_minutes"] > 0]
+    durations = [min(s["duration_minutes"], MAX_SESSION_MINUTES) for s in sessions if s["duration_minutes"] > 0]
     avg_dur = sum(durations) / len(durations) if durations else 0
     return {
         "session_count": len(sessions),
@@ -1273,13 +1315,13 @@ def generate_writeup(data):
     def he(s):
         return str(s).replace("&","&amp;").replace("<","&lt;").replace(">","&gt;")
 
-    total_sessions = max(meta.get("session_count", 0), jsonl.get("sessions_with_data", 0))
+    total_sessions = jsonl.get("sessions_with_data", meta.get("session_count", 0))
     skill_invocations = jsonl.get("skill_invocations", {})
     hook_defs = settings.get("hooks", [])
     cli_tools = jsonl.get("cli_tools", {})
     enabled_plugins = settings.get("enabled_plugins", {})
-    tool_counts = Counter(meta.get("tool_counts", {}))
-    for t, c in jsonl.get("tool_usage", {}).items():
+    tool_counts = Counter(jsonl.get("tool_usage", {}))
+    for t, c in meta.get("tool_counts", {}).items():
         if t not in tool_counts:
             tool_counts[t] = c
 
@@ -1598,13 +1640,14 @@ def generate_html(data):
     blocklist_info = data.get("blocklist", {})
     perm_accum = data.get("perm_accumulation", {})
 
-    total_sessions = max(meta.get("session_count", 0), jsonl.get("sessions_with_data", 0))
-    total_tokens = meta.get("total_tokens", 0)
+    total_sessions = jsonl.get("sessions_with_data", meta.get("session_count", 0))
+    total_tokens = (jsonl.get("total_input_tokens", 0) + jsonl.get("total_output_tokens", 0)) or meta.get("total_tokens", 0)
+    lifetime_tokens = stats_cache.get("lifetime_tokens", 0)
     total_hours = meta.get("total_duration_hours", 0)
     avg_duration = meta.get("avg_duration_minutes", 0)
 
-    tool_counts = Counter(meta.get("tool_counts", {}))
-    for t, c in jsonl.get("tool_usage", {}).items():
+    tool_counts = Counter(jsonl.get("tool_usage", {}))
+    for t, c in meta.get("tool_counts", {}).items():
         if t not in tool_counts:
             tool_counts[t] = c
 
@@ -1647,9 +1690,11 @@ def generate_html(data):
 
     def fmt(n):
         if isinstance(n, float):
+            if n >= 1_000_000_000: return f"{n/1_000_000_000:.1f}B"
             if n >= 1_000_000: return f"{n/1_000_000:.1f}M"
             if n >= 1_000: return f"{n/1_000:.1f}K"
             return f"{n:.1f}"
+        if n >= 1_000_000_000: return f"{n/1_000_000_000:.1f}B"
         if n >= 1_000_000: return f"{n/1_000_000:.1f}M"
         if n >= 1_000: return f"{n/1_000:.1f}K"
         return str(n)
@@ -1802,6 +1847,177 @@ def generate_html(data):
     if hf.get("project_workflows"): hf_items.append(f'{hf["project_workflows"]} WORKFLOWS.md files')
     hf_html = "".join(f'<div class="file-item">{he(f)}</div>' for f in hf_items)
 
+    # ── Build embedded JSON data blob (matches HarnessData TS interface) ────
+    # Parse writeup sections from generate_writeup() output
+    _writeup_html = generate_writeup(data)
+    _writeup_sections_json = []
+    for _m in re.finditer(
+        r'<div class="writeup-section">\s*<h2>(.*?)</h2>(.*?)</div>\s*(?=<div class="writeup-section">|$)',
+        _writeup_html,
+        re.DOTALL,
+    ):
+        _writeup_sections_json.append({
+            "title": _m.group(1).strip(),
+            "contentHtml": _m.group(2).strip(),
+        })
+
+    # Feature pills array
+    _feature_pills = [
+        {"name": "Status Line", "active": bool(settings.get("has_statusline")), "value": ""},
+        {"name": "Task Agents", "active": meta.get("uses_task_agent_pct", 0) > 0, "value": f'{meta.get("uses_task_agent_pct", 0)}%'},
+        {"name": "MCP", "active": meta.get("uses_mcp_pct", 0) > 0, "value": f'{meta.get("uses_mcp_pct", 0)}%'},
+        {"name": "Web Search", "active": meta.get("uses_web_search_pct", 0) > 0, "value": f'{meta.get("uses_web_search_pct", 0)}%'},
+        {"name": "Sub-Agents", "active": jsonl.get("agent_count", 0) > 0, "value": str(jsonl.get("agent_count", 0))},
+        {"name": "Tasks", "active": jsonl.get("task_creates", 0) > 0, "value": str(jsonl.get("task_creates", 0))},
+        {"name": "Plan Mode", "active": jsonl.get("plan_mode_enters", 0) > 0, "value": str(jsonl.get("plan_mode_enters", 0))},
+        {"name": "Compactions", "active": jsonl.get("compaction_events", 0) > 0, "value": str(jsonl.get("compaction_events", 0))},
+    ]
+
+    # Skill inventory array
+    _skill_inventory_json = []
+    for n, c in sorted(skill_invocations.items(), key=lambda x: x[1], reverse=True)[:20]:
+        sm = skill_meta.get(n, {})
+        src = sm.get("source", "")
+        if not src:
+            src = "plugin" if ":" in n else "custom"
+        _skill_inventory_json.append({
+            "name": n,
+            "calls": c,
+            "source": src,
+            "description": sm.get("description", ""),
+        })
+
+    # Hook definitions array
+    _hook_defs_json = [
+        {"event": h.get("event", ""), "matcher": h.get("matcher", ""), "script": h.get("script", "")}
+        for h in hook_defs
+    ]
+
+    # Plugins array
+    _plugins_json = [
+        {
+            "name": p["name"],
+            "version": p.get("version", ""),
+            "marketplace": p.get("marketplace", ""),
+            "active": bool(enabled_plugins.get(p["name"], {}).get("enabled")),
+        }
+        for p in plugins
+    ]
+
+    # Harness files as string array
+    _harness_files_json = hf_items  # already built as string list
+
+    # File operation style
+    _file_op_style = {
+        "readPct": pct(reads, total_file_ops),
+        "editPct": pct(edits, total_file_ops),
+        "writePct": pct(writes, total_file_ops),
+        "grepCount": greps,
+        "globCount": globs,
+        "style": "Surgical Editor" if edits > writes * 1.5 else "Full-File Writer",
+    }
+
+    # Agent dispatch (or null)
+    _agent_dispatch = None
+    if jsonl.get("agent_count", 0) > 0:
+        _agent_dispatch = {
+            "totalAgents": jsonl.get("agent_count", 0),
+            "types": dict(jsonl.get("agent_types", {})),
+            "models": dict(jsonl.get("agent_models", {})),
+            "backgroundPct": jsonl.get("agent_background_pct", 0),
+            "customAgents": [a["name"] for a in custom_agents],
+        }
+
+    # Git patterns
+    _git_patterns = {
+        "prCount": jsonl.get("pr_count", 0),
+        "commitCount": meta.get("total_git_commits", 0),
+        "linesAdded": fmt(meta.get("total_lines_added", 0)),
+        "branchPrefixes": dict(branch_prefixes),
+    }
+
+    # Workflow data (or null)
+    _workflow_data = None
+    if skill_invocations or workflow_patterns or phase_transitions or phase_distribution:
+        _workflow_data = {
+            "skillInvocations": dict(skill_invocations),
+            "agentDispatches": dict(jsonl.get("agent_dispatches", {})) if jsonl.get("agent_dispatches") else {},
+            "workflowPatterns": [{"sequence": p["sequence"], "count": p["count"]} for p in workflow_patterns],
+            "phaseTransitions": dict(phase_transitions),
+            "phaseDistribution": dict(phase_distribution),
+            "phaseStats": {
+                "testBeforeShipPct": phase_stats.get("test_before_ship_pct", 0),
+                "exploreBeforeImplPct": phase_stats.get("explore_before_impl_pct", 0),
+                "totalSessionsWithPhases": phase_stats.get("total_sessions_with_phases", 0),
+            },
+        }
+
+    # Autonomy description
+    _autonomy_desc = f"1 human turn per {round(1/ar) if ar > 0 else '?'} Claude turns"
+
+    # Versions
+    _versions = list(jsonl.get("versions", {}).keys()) if isinstance(jsonl.get("versions"), dict) else []
+
+    # Integrity hash from pre-computed data
+    _integrity = data.get("_integrity", {})
+    _integrity_hash = _integrity.get("hash", "")
+
+    # Enhanced stats (fields the upload route currently scrapes from HTML)
+    _enhanced_stats = {
+        "linesAdded": meta.get("total_lines_added", None),
+        "linesRemoved": meta.get("total_lines_removed", None),
+        "fileCount": None,  # not tracked by extract.py currently
+        "dayCount": DAYS,
+        "msgsPerDay": stats_cache.get("avg_daily_messages", None),
+    }
+
+    harness_json = {
+        "stats": {
+            "totalTokens": total_tokens,
+            "lifetimeTokens": lifetime_tokens,
+            "durationHours": total_hours,
+            "avgSessionMinutes": round(avg_duration, 1),
+            "skillsUsedCount": len(skill_invocations),
+            "hooksCount": len(hook_defs),
+            "prCount": jsonl.get("pr_count", 0),
+            "sessionCount": total_sessions,
+            "commitCount": meta.get("total_git_commits", 0),
+        },
+        "autonomy": {
+            "label": autonomy_label,
+            "description": _autonomy_desc,
+            "userMessages": jsonl.get("user_messages", 0),
+            "assistantMessages": jsonl.get("assistant_messages", 0),
+            "turnCount": jsonl.get("turn_count", 0),
+            "errorRate": f'{jsonl.get("error_rate_pct", 0)}%',
+        },
+        "featurePills": _feature_pills,
+        "toolUsage": dict(tool_counts),
+        "skillInventory": _skill_inventory_json,
+        "hookDefinitions": _hook_defs_json,
+        "hookFrequency": dict(hook_events),
+        "plugins": _plugins_json,
+        "harnessFiles": _harness_files_json,
+        "fileOpStyle": _file_op_style,
+        "agentDispatch": _agent_dispatch,
+        "cliTools": dict(cli_tools),
+        "languages": dict(languages),
+        "models": dict(models),
+        "permissionModes": dict(perm_modes),
+        "mcpServers": dict(mcp_servers),
+        "gitPatterns": _git_patterns,
+        "versions": _versions,
+        "writeupSections": _writeup_sections_json,
+        "workflowData": _workflow_data,
+        "integrityHash": _integrity_hash,
+        "skillVersion": VERSION,
+        "enhancedStats": _enhanced_stats,
+    }
+
+    _harness_json_str = json.dumps(harness_json)
+    # Mandatory: escape </script> to prevent breaking the script tag
+    _harness_json_str = _harness_json_str.replace("</script>", r"<\/script>")
+
     html = f'''<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -1930,6 +2146,7 @@ h3 {{ font-size:0.8rem; font-weight:600; color:var(--ink); margin:1rem 0 0.5rem;
 <div class="stats-grid">
     <div class="stat"><div class="stat-value">{total_sessions}</div><div class="stat-label">Sessions</div></div>
     <div class="stat"><div class="stat-value">{fmt(total_tokens)}</div><div class="stat-label">Tokens</div></div>
+    <div class="stat"><div class="stat-value">{fmt(lifetime_tokens)}</div><div class="stat-label">Lifetime Tokens</div></div>
     <div class="stat"><div class="stat-value">{total_hours}h</div><div class="stat-label">Duration</div></div>
     <div class="stat"><div class="stat-value">{avg_duration:.0f}m</div><div class="stat-label">Avg Session</div></div>
     <div class="stat"><div class="stat-value">{len(skill_invocations)}</div><div class="stat-label">Skills Used</div></div>
@@ -2249,6 +2466,10 @@ function switchTab(tab) {{
 }}
 </script>
 
+<!-- Embedded JSON data blob: complete structured data for website ingestion.
+     The site reads this directly instead of scraping the HTML. -->
+<script type="application/json" id="harness-data">{_harness_json_str}</script>
+
 <!-- Integrity manifest: server can extract this JSON block, recompute the SHA-256,
      and verify the hash matches. Catches casual edits to visible stats. -->
 <script type="application/json" id="insight-harness-integrity">{integrity_block}</script>
@@ -2261,43 +2482,15 @@ function switchTab(tab) {{
 # ── Version Check & Self-Update ───────────────────────────────────────────
 
 def check_for_updates():
-    """Check GitHub for newer version. Never blocks or crashes."""
-    try:
-        url = "https://raw.githubusercontent.com/craigdossantos/claude-toolkit/main/skills/insight-harness/SKILL.md"
-        req = urllib.request.Request(url, headers={"User-Agent": "insight-harness"})
-        with urllib.request.urlopen(req, timeout=3) as resp:
-            content = resp.read().decode("utf-8", errors="ignore")
-        match = re.search(r"^version:\s*(.+)$", content, re.MULTILINE)
-        if match:
-            remote = match.group(1).strip()
-            if remote != VERSION:
-                print(f"\n⚡ Insight Harness update available: v{VERSION} → v{remote}", file=sys.stderr)
-                print("  Run: python3 ~/.claude/skills/insight-harness/scripts/extract.py --update", file=sys.stderr)
-    except Exception:
-        pass  # Network issues, parse errors — silently continue
+    """Auto-update DISABLED (v2.2.0) — local fixes were being wiped by remote pulls."""
+    pass  # Intentionally disabled to preserve local bug fixes
 
 
 def self_update():
-    """Download and install the latest version from GitHub."""
-    import subprocess
-    print("Updating Insight Harness skill...")
-    result = subprocess.run([
-        "bash", "-c",
-        "curl -sL https://github.com/craigdossantos/claude-toolkit/archive/main.tar.gz | tar xz -C /tmp && cp -r /tmp/claude-toolkit-main/skills/insight-harness ~/.claude/skills/ && rm -rf /tmp/claude-toolkit-main"
-    ])
-    if result.returncode == 0:
-        # Read new version
-        skill_md = Path.home() / ".claude" / "skills" / "insight-harness" / "SKILL.md"
-        if skill_md.exists():
-            content = skill_md.read_text()
-            match = re.search(r"^version:\s*(.+)$", content, re.MULTILINE)
-            if match:
-                print(f"✓ Updated to v{match.group(1).strip()}")
-                return
-        print("✓ Updated successfully")
-    else:
-        print("✗ Update failed", file=sys.stderr)
-        sys.exit(1)
+    """Auto-update DISABLED (v2.2.0) — local fixes were being wiped by remote pulls."""
+    print("Auto-update is disabled in v2.2.0 to preserve local bug fixes.", file=sys.stderr)
+    print("To update manually, re-run the install curl command from SKILL.md.", file=sys.stderr)
+    sys.exit(1)
 
 
 # ── Main ───────────────────────────────────────────────────────────────────
@@ -2415,7 +2608,7 @@ def main():
     meta = data.get("session_meta_summary", {})
     jsonl = data.get("jsonl_metadata", {})
     integrity_payload = {
-        "v": 1,
+        "v": 2, "skill_version": VERSION,
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "sessions": meta.get("session_count", 0),
         "total_tokens": meta.get("total_tokens", 0),
