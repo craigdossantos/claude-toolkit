@@ -162,9 +162,9 @@ Each version should have a design-note at the top explaining what the user is se
 </div>
 ```
 
-### Version nav defaults to v1
+### Version nav defaults to the NEWEST version
 
-The shell JS defaults to showing version 1 (entry state) so reviewers see the first impression first. They can navigate forward to see the flow progression.
+The newest version (highest `data-version` number) must always have the `active` class. When a user opens the mockup, they see the latest iteration immediately — not v1. Old versions are preserved but hidden, accessible via prev/next buttons. For journey states (entry/action/completion), each state is its own section — version navigation is for _iterations_ of the same state, not for flipping between different states.
 
 ## Generating a Mockup
 
@@ -179,20 +179,30 @@ Use `assets/mockup-shell.html` as the structural reference. Build a single self-
 
 ### Section structure
 
+Each screen/state gets ONE `.mockup-section`. Multiple iterations of that screen go inside the SAME section as `.version` divs — NEVER as separate sections stacked vertically on the page.
+
 ```html
 <div class="mockup-section" data-section-id="state1" id="state1">
   <span class="section-label">State 1 — Description</span>
   <p class="section-desc">What this state shows and why.</p>
 
   <div class="version-container">
-    <div class="version active" data-version="1">
-      <!-- Actual design mockup content here -->
+    <!-- ALL versions of this screen live here, inside ONE container -->
+    <!-- Only .version.active is visible; others are hidden via CSS -->
+    <div class="version" data-version="1">
+      <!-- original design (hidden — no "active" class) -->
+    </div>
+    <div class="version" data-version="2">
+      <!-- second iteration (hidden) -->
+    </div>
+    <div class="version active" data-version="3">
+      <!-- NEWEST iteration — this one is active/visible by default -->
     </div>
   </div>
 
   <div class="version-nav">
-    <button data-dir="prev" disabled>&larr; Prev</button>
-    <span class="version-label">v1 of 1</span>
+    <button data-dir="prev">&larr; Prev</button>
+    <span class="version-label">v3 of 3</span>
     <button data-dir="next" disabled>Next &rarr;</button>
   </div>
 
@@ -207,6 +217,28 @@ Use `assets/mockup-shell.html` as the structural reference. Build a single self-
 </div>
 
 <div class="section-divider"></div>
+```
+
+**WRONG** — do NOT do this (separate sections per version):
+
+```html
+<!-- WRONG: creates vertical scrolling through old versions -->
+<div class="mockup-section" data-section-id="light-v1">...</div>
+<div class="mockup-section" data-section-id="light-v2">...</div>
+<div class="mockup-section" data-section-id="light-v3">...</div>
+```
+
+**RIGHT** — one section, multiple `.version` divs inside it:
+
+```html
+<!-- RIGHT: one section with version-container holding all iterations -->
+<div class="mockup-section" data-section-id="light-mode">
+  <div class="version-container">
+    <div class="version" data-version="1">...</div>
+    <div class="version" data-version="2">...</div>
+    <div class="version active" data-version="3">...</div>
+  </div>
+</div>
 ```
 
 ### Design note callouts
@@ -227,10 +259,14 @@ Use `assets/mockup-shell.html` as the structural reference. Build a single self-
 
 When the user provides feedback (either pasted JSON or verbal), update the SAME HTML file:
 
-1. **For each section with changes**, wrap the existing `.version` div content as-is and add a new `.version` div with incremented `data-version`
-2. **Set the new version as `active`**, remove `active` from old versions
+1. **For each section with changes**, add a new `.version` div with incremented `data-version` INSIDE the existing `.version-container`
+2. **Remove `active` from ALL old versions**, set `active` ONLY on the new (highest-numbered) version
 3. **Do NOT create a new file** — always edit in place so the user can refresh
-4. The version-nav JS auto-detects multiple versions and shows prev/next buttons
+4. **Do NOT create a new section** — add the new version div inside the existing section's `.version-container`
+5. The version-nav JS auto-detects multiple versions and shows prev/next buttons
+6. Update the version-label text to reflect the new count (e.g., "v3 of 3")
+
+**The newest version is always active.** The user sees the latest iteration when they open/refresh the page. They use prev/next buttons to review older versions if needed.
 
 ### Version iteration example
 
@@ -244,17 +280,44 @@ Before (v1 only):
 </div>
 ```
 
-After iteration (v1 + v2):
+After first iteration (v1 + v2 — v2 is active):
 
 ```html
 <div class="version-container">
   <div class="version" data-version="1">
-    <!-- original design preserved -->
+    <!-- original design preserved but HIDDEN -->
   </div>
   <div class="version active" data-version="2">
-    <!-- updated design -->
+    <!-- updated design — VISIBLE by default -->
   </div>
 </div>
+```
+
+After second iteration (v1 + v2 + v3 — v3 is active):
+
+```html
+<div class="version-container">
+  <div class="version" data-version="1">
+    <!-- original design preserved but HIDDEN -->
+  </div>
+  <div class="version" data-version="2">
+    <!-- first iteration preserved but HIDDEN -->
+  </div>
+  <div class="version active" data-version="3">
+    <!-- latest design — VISIBLE by default -->
+  </div>
+</div>
+```
+
+The required CSS for version visibility:
+
+```css
+.version {
+  display: none;
+}
+.version.active {
+  display: block;
+}
 ```
 
 ## Feedback JSON Format
@@ -296,4 +359,6 @@ Parse this to understand which sections have feedback, which version was viewed,
 - **Self-contained** — all CSS and JS inline, no CDN dependencies except fonts
 - **Feedback areas always present** — every section gets a textarea
 - **Open after generating** — always run `open <path>` after creating or updating
+- **Print clickable URL** — after creating or updating a mockup, always print the full `file://` URL (e.g., `file:///Users/.../docs/mockups/name.html`) so the user can click it directly, in addition to running `open <path>`
 - **Never approximate when you can embed** — iframe or verbatim HTML over hand-drawn mockups
+- **Version navigation over vertical stacking** — NEVER list versions as separate sections stacked vertically on the page. Always use the `.version-container` + prev/next nav pattern. The newest version (highest `data-version`) must have the `active` class so it displays by default. Old versions are hidden (`display: none`) and accessible only via prev/next buttons. One `.mockup-section` per screen, one `.version-container` per section, multiple `.version` divs inside it.
